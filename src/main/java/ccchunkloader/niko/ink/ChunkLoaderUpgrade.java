@@ -12,6 +12,7 @@ import net.minecraft.util.Identifier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Set;
 import java.util.UUID;
 
 public class ChunkLoaderUpgrade extends AbstractTurtleUpgrade {
@@ -24,10 +25,17 @@ public class ChunkLoaderUpgrade extends AbstractTurtleUpgrade {
 
     @Override
     public IPeripheral createPeripheral(ITurtleAccess turtle, TurtleSide side) {
+        // Get the UUID for this peripheral - this will create one if it doesn't exist
+        UUID turtleId = getTurtleUUID(turtle, side);
+        
+        // Check if we need to clean up an old UUID from this turtle position
+        if (turtle.getLevel() instanceof ServerWorld serverWorld) {
+            cleanupOldTurtleUUIDs(turtle, side, turtleId, serverWorld);
+        }
+        
         ChunkLoaderPeripheral peripheral = new ChunkLoaderPeripheral(turtle, side);
 
         // Check if this turtle should bootstrap its chunk loading from saved state
-        UUID turtleId = peripheral.getTurtleId();
         ChunkLoaderRegistry.BootstrapData bootstrapData = ChunkLoaderRegistry.getBootstrapData(turtleId);
 
         if (bootstrapData != null && bootstrapData.wakeOnWorldLoad && turtle.getFuelLevel() >= bootstrapData.lastKnownFuelLevel) {
@@ -41,6 +49,37 @@ public class ChunkLoaderUpgrade extends AbstractTurtleUpgrade {
         }
 
         return peripheral;
+    }
+    
+    /**
+     * Clean up old turtle UUIDs that might be at this position from previous peripheral attachments
+     * This handles the case where a turtle peripheral is unequipped and re-equipped
+     */
+    private void cleanupOldTurtleUUIDs(ITurtleAccess turtle, TurtleSide side, UUID currentUUID, ServerWorld serverWorld) {
+        // Check if there are any other turtle UUIDs that might be associated with this turtle position
+        // that are different from the current UUID (indicating peripheral was re-equipped)
+        
+        ChunkManager chunkManager = ChunkManager.get(serverWorld);
+        
+        // Get all tracked turtles and check if any are at the same position with different UUIDs
+        Set<UUID> trackedTurtles = chunkManager.getRestoredTurtleIds();
+        
+        for (UUID trackedId : trackedTurtles) {
+            if (!trackedId.equals(currentUUID)) {
+                ChunkLoaderPeripheral.SavedState state = chunkManager.getCachedTurtleState(trackedId);
+                if (state != null && state.lastChunkPos != null) {
+                    // Check if this old turtle was at the same position as the current turtle
+                    if (state.lastChunkPos.equals(new net.minecraft.util.math.ChunkPos(turtle.getPosition()))) {
+                        LOGGER.info("Found old turtle UUID {} at current position, permanently removing (replaced by {})", 
+                                   trackedId, currentUUID);
+                        
+                        // Permanently remove the old turtle data
+                        ChunkManager.permanentlyRemoveTurtleFromWorld(serverWorld, trackedId);
+                        ChunkLoaderRegistry.permanentlyRemoveTurtle(trackedId);
+                    }
+                }
+            }
+        }
     }
 
     @Override

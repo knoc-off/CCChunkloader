@@ -30,6 +30,10 @@ public class ChunkManager {
     private final Map<UUID, Long> lastTouch = new ConcurrentHashMap<>();
     // Cache of turtle states for persistence (survives peripheral cleanup)
     private final Map<UUID, ChunkLoaderPeripheral.SavedState> turtleStateCache = new ConcurrentHashMap<>();
+    // Persistent position tracking (source of truth for turtle positions)
+    private final Map<UUID, ChunkPos> persistentPositions = new ConcurrentHashMap<>();
+    // Persistent fuel tracking (source of truth for turtle fuel levels)
+    private final Map<UUID, Integer> persistentFuelLevels = new ConcurrentHashMap<>();
 
     private final ServerWorld world;
     private boolean bootstrapped = false;
@@ -231,15 +235,21 @@ public class ChunkManager {
     }
 
     /**
-     * Remove all chunks loaded by a specific turtle
+     * Remove all chunks loaded by a specific turtle but preserve turtle tracking
      * IMPORTANT: World operations are done OUTSIDE synchronized blocks to prevent deadlocks
+     * NOTE: This method preserves turtle tracking data to prevent permanent data loss
      */
     public void removeAllChunks(UUID turtleId) {
-        // PHASE 1: Get chunks to remove under lock (fast, non-blocking)
+        // PHASE 1: Get chunks to remove under lock but PRESERVE turtle tracking (fast, non-blocking)
         Set<ChunkPos> chunks;
         synchronized (this) {
-            chunks = turtleChunks.remove(turtleId);
-            lastTouch.remove(turtleId);
+            chunks = turtleChunks.get(turtleId);
+            if (chunks != null) {
+                // Clear the chunk set but keep the turtle tracked with empty set
+                turtleChunks.put(turtleId, ConcurrentHashMap.newKeySet());
+                chunks = Set.copyOf(chunks); // Make a copy for iteration
+            }
+            // DON'T remove from lastTouch - keep turtle tracked for persistence
         }
 
         // PHASE 2: Remove chunks WITHOUT holding locks (can block safely)
@@ -248,7 +258,7 @@ public class ChunkManager {
                 removeChunkLoader(turtleId, chunk);
             }
         }
-        LOGGER.debug("Removed {} chunks for turtle {}", chunks != null ? chunks.size() : 0, turtleId);
+        LOGGER.debug("Removed {} chunks for turtle {} (turtle tracking preserved)", chunks != null ? chunks.size() : 0, turtleId);
     }
 
     /**
@@ -303,6 +313,37 @@ public class ChunkManager {
             turtleChunks.put(turtleId, ConcurrentHashMap.newKeySet());
             LOGGER.debug("Added turtle {} to turtleChunks tracking with empty chunk set", turtleId);
         }
+    }
+    
+    /**
+     * Update persistent position tracking for a turtle (source of truth)
+     */
+    public void updateTurtlePosition(UUID turtleId, ChunkPos position) {
+        persistentPositions.put(turtleId, position);
+        touch(turtleId); // Also update last activity
+        LOGGER.debug("Updated persistent position for turtle {}: {}", turtleId, position);
+    }
+    
+    /**
+     * Update persistent fuel tracking for a turtle (source of truth)
+     */
+    public void updateTurtleFuel(UUID turtleId, int fuelLevel) {
+        persistentFuelLevels.put(turtleId, fuelLevel);
+        LOGGER.debug("Updated persistent fuel for turtle {}: {}", turtleId, fuelLevel);
+    }
+    
+    /**
+     * Get persistent position for a turtle (always available)
+     */
+    public ChunkPos getPersistentPosition(UUID turtleId) {
+        return persistentPositions.get(turtleId);
+    }
+    
+    /**
+     * Get persistent fuel level for a turtle (always available)
+     */
+    public Integer getPersistentFuelLevel(UUID turtleId) {
+        return persistentFuelLevels.get(turtleId);
     }
 
     /**
@@ -361,6 +402,7 @@ public class ChunkManager {
     /**
      * Cleanup inactive chunk loaders (called periodically)
      * IMPORTANT: World operations are done OUTSIDE synchronized blocks to prevent deadlocks
+     * NOTE: This method now preserves turtle state instead of removing inactive turtles
      */
     public void cleanup(long maxInactiveTime) {
         long currentTime = System.currentTimeMillis();
@@ -368,22 +410,21 @@ public class ChunkManager {
         // PHASE 1: Identify inactive turtles under lock (fast, non-blocking)
         Set<UUID> inactiveTurtles = ConcurrentHashMap.newKeySet();
         synchronized (this) {
-            lastTouch.entrySet().removeIf(entry -> {
+            for (Map.Entry<UUID, Long> entry : lastTouch.entrySet()) {
                 UUID turtleId = entry.getKey();
                 long lastActivity = entry.getValue();
 
                 if (currentTime - lastActivity > maxInactiveTime) {
                     inactiveTurtles.add(turtleId);
-                    return true;
                 }
-                return false;
-            });
+            }
+            // DON'T remove from lastTouch - keep turtles tracked for persistence
         }
 
         // PHASE 2: Clean up inactive turtles WITHOUT holding locks (can block safely)
-        // Store turtle state in cache before removing chunks, so dormant turtles can be saved
+        // Preserve turtle state in cache and only remove active chunk loading
         for (UUID turtleId : inactiveTurtles) {
-            LOGGER.info("Cleaning up inactive turtle chunk loader: {}", turtleId);
+            LOGGER.info("Deactivating inactive turtle chunk loader: {} (preserving state)", turtleId);
             
             // Try to preserve state from active peripheral before cleanup
             ChunkLoaderPeripheral peripheral = ChunkLoaderRegistry.getPeripheral(turtleId);
@@ -395,6 +436,7 @@ public class ChunkManager {
                 }
             }
             
+            // Only remove chunk loading, not turtle tracking
             removeAllChunks(turtleId);
         }
     }
@@ -479,8 +521,9 @@ public class ChunkManager {
     }
 
     /**
-     * Emergency cleanup - remove all chunk loaders
+     * Emergency cleanup - remove all chunk loaders but preserve turtle state cache
      * IMPORTANT: World operations are done OUTSIDE synchronized blocks to prevent deadlocks
+     * NOTE: This method preserves turtle state cache to prevent permanent data loss
      */
     public void clearAll() {
         // PHASE 1: Get all chunks to unforce under lock (fast, non-blocking)
@@ -488,16 +531,19 @@ public class ChunkManager {
         synchronized (this) {
             chunksToUnforce = Set.copyOf(chunkLoaders.keySet());
             chunkLoaders.clear();
-            turtleChunks.clear();
-            lastTouch.clear();
-            turtleStateCache.clear();
+            
+            // Clear active chunk tracking but preserve turtle existence
+            for (UUID turtleId : turtleChunks.keySet()) {
+                turtleChunks.put(turtleId, ConcurrentHashMap.newKeySet());
+            }
+            // DON'T clear lastTouch, turtleStateCache, persistentPositions, or persistentFuelLevels - preserve turtle data
         }
 
         // PHASE 2: Unforce chunks WITHOUT holding locks (can block safely)
         for (ChunkPos chunk : chunksToUnforce) {
             world.setChunkForced(chunk.x, chunk.z, false);
         }
-        LOGGER.info("Emergency cleanup: cleared {} chunk loaders for world {}",
+        LOGGER.info("Emergency cleanup: cleared {} chunk loaders for world {} (turtle data preserved)",
                    chunksToUnforce.size(), world.getRegistryKey().getValue());
     }
 
@@ -508,6 +554,39 @@ public class ChunkManager {
         ChunkManager manager = MANAGERS.remove(world);
         if (manager != null) {
             manager.clearAll();
+        }
+    }
+
+    /**
+     * Permanently remove a turtle from all tracking (only for UUID changes/peripheral removal)
+     * This is the ONLY method that should completely remove turtle data
+     */
+    public void permanentlyRemoveTurtle(UUID turtleId) {
+        LOGGER.info("PERMANENTLY removing turtle {} from all tracking", turtleId);
+        
+        // Remove all chunks first
+        removeAllChunks(turtleId);
+        
+        synchronized (this) {
+            // Now actually remove from tracking maps
+            turtleChunks.remove(turtleId);
+            lastTouch.remove(turtleId);
+            turtleStateCache.remove(turtleId);
+            restoredTurtleStates.remove(turtleId);
+            persistentPositions.remove(turtleId);
+            persistentFuelLevels.remove(turtleId);
+        }
+        
+        LOGGER.info("Turtle {} permanently removed from ChunkManager", turtleId);
+    }
+    
+    /**
+     * Static method to permanently remove a turtle from a specific world
+     */
+    public static void permanentlyRemoveTurtleFromWorld(ServerWorld world, UUID turtleId) {
+        ChunkManager manager = MANAGERS.get(world);
+        if (manager != null) {
+            manager.permanentlyRemoveTurtle(turtleId);
         }
     }
 
@@ -540,43 +619,61 @@ public class ChunkManager {
             boolean wakeOnWorldLoad = false;
             boolean isActive = false;
             
-            // Try to get minimal essential data from active peripheral first
+            // PRIMARY SOURCE: Use persistent tracking data as source of truth
+            lastPosition = persistentPositions.get(turtleId);
+            Integer persistentFuel = persistentFuelLevels.get(turtleId);
+            if (persistentFuel != null) {
+                fuelLevel = persistentFuel;
+            }
+            
+            // Get wake preference from active peripheral or cache
             ChunkLoaderPeripheral chunkLoader = ChunkLoaderRegistry.getPeripheral(turtleId);
             if (chunkLoader != null) {
                 ChunkLoaderPeripheral.SavedState state = chunkLoader.getSavedState();
                 if (state != null) {
-                    lastPosition = state.lastChunkPos;
-                    fuelLevel = state.fuelLevel;
                     wakeOnWorldLoad = state.wakeOnWorldLoad;
                     isActive = true;
                     // Update cache with latest state from active peripheral
                     turtleStateCache.put(turtleId, state);
+                    
+                    // Update persistent data from active peripheral if available
+                    if (state.lastChunkPos != null) {
+                        lastPosition = state.lastChunkPos;
+                        persistentPositions.put(turtleId, state.lastChunkPos);
+                    }
+                    fuelLevel = state.fuelLevel;
+                    persistentFuelLevels.put(turtleId, state.fuelLevel);
                 }
             } else {
-                // Fallback to cached state for dormant turtles
+                // Fallback to cached state for wake preference only
                 ChunkLoaderPeripheral.SavedState cachedState = turtleStateCache.get(turtleId);
                 if (cachedState != null) {
-                    lastPosition = cachedState.lastChunkPos;
-                    fuelLevel = cachedState.fuelLevel;
                     wakeOnWorldLoad = cachedState.wakeOnWorldLoad;
-                    LOGGER.debug("Using cached state for dormant turtle {}", turtleId);
+                    LOGGER.debug("Using cached wake preference for dormant turtle {}", turtleId);
                 }
             }
             
-            // Save essential bootstrap data including wakeOnWorldLoad status
-            if (lastPosition != null && fuelLevel >= 0) {
-                NbtCompound stateData = new NbtCompound();
-                stateData.putString("uuid", turtleId.toString());
-                stateData.putInt("lastChunkX", lastPosition.x);
-                stateData.putInt("lastChunkZ", lastPosition.z);
-                stateData.putInt("fuelLevel", fuelLevel);
-                stateData.putBoolean("wakeOnWorldLoad", wakeOnWorldLoad); // CRITICAL: Save wake status!
-                turtleStates.add(stateData);
-                LOGGER.debug("Serialized essential data for turtle {}: active={}, pos=({},{}), fuel={}, wake={}",
-                            turtleId, isActive, lastPosition.x, lastPosition.z, fuelLevel, wakeOnWorldLoad);
-            } else {
-                LOGGER.warn("Could not save essential data for turtle {} - missing position or fuel data", turtleId);
+            // Handle missing data with defaults and loud logging
+            if (lastPosition == null) {
+                LOGGER.error("CRITICAL: Turtle {} has no position data even in persistent tracking! This should never happen. Skipping serialization.", turtleId);
+                continue; // Skip this turtle entirely if no position
             }
+            
+            if (fuelLevel < 0) {
+                LOGGER.error("CRITICAL: Turtle {} has no fuel data even in persistent tracking! Defaulting to fuel=1 to prevent data loss.", turtleId);
+                fuelLevel = 1; // Default to 1 fuel as requested
+            }
+            
+            // Save essential bootstrap data including wakeOnWorldLoad status
+            NbtCompound stateData = new NbtCompound();
+            stateData.putString("uuid", turtleId.toString());
+            stateData.putInt("lastChunkX", lastPosition.x);
+            stateData.putInt("lastChunkZ", lastPosition.z);
+            stateData.putInt("fuelLevel", fuelLevel);
+            stateData.putBoolean("wakeOnWorldLoad", wakeOnWorldLoad);
+            turtleStates.add(stateData);
+            LOGGER.debug("Serialized essential data for turtle {}: active={}, pos=({},{}), fuel={}, wake={}",
+                        turtleId, isActive, lastPosition.x, lastPosition.z, fuelLevel, wakeOnWorldLoad);
         }
 
         nbt.put("turtleStates", turtleStates);
@@ -603,7 +700,7 @@ public class ChunkManager {
         turtleChunks.clear();
         lastTouch.clear();
         restoredTurtleStates.clear();
-        turtleStateCache.clear();
+        // DON'T clear turtleStateCache - merge with existing data to preserve any runtime state
 
         if (nbt.contains("turtleStates")) {
             NbtList turtleStatesNbt = nbt.getList("turtleStates", 10);
@@ -641,6 +738,14 @@ public class ChunkManager {
                     lastTouch.put(turtleId, System.currentTimeMillis());
                     restoredTurtleStates.put(turtleId, bootstrapState);
                     turtleStateCache.put(turtleId, bootstrapState);
+                    
+                    // CRITICAL: Update persistent tracking with loaded data
+                    if (lastChunkPos != null) {
+                        persistentPositions.put(turtleId, lastChunkPos);
+                    }
+                    if (fuelLevel >= 0) {
+                        persistentFuelLevels.put(turtleId, fuelLevel);
+                    }
                     
                     LOGGER.debug("Restored turtle bootstrap data {}: pos=({},{}), fuel={}, wake={}", 
                                 turtleId, lastChunkPos != null ? lastChunkPos.x : "null", 

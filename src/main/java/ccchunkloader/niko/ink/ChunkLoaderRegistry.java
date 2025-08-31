@@ -153,6 +153,20 @@ public class ChunkLoaderRegistry {
     }
 
     /**
+     * Permanently remove a turtle from all tracking (for UUID changes/peripheral removal)
+     */
+    public static void permanentlyRemoveTurtle(UUID turtleId) {
+        LOGGER.info("PERMANENTLY removing turtle {} from registry", turtleId);
+        
+        ChunkLoaderPeripheral removed = ACTIVE_PERIPHERALS.remove(turtleId);
+        BOOTSTRAP_DATA.remove(turtleId);
+        
+        if (removed != null) {
+            LOGGER.info("Removed active peripheral for turtle {}", turtleId);
+        }
+    }
+    
+    /**
      * Clear all data (for mod shutdown/world unload)
      */
     public static void clearAll() {

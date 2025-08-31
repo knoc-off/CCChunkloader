@@ -58,6 +58,13 @@ public class ChunkLoaderPeripheral implements IPeripheral {
             if (!manager.isTurtleTracked(turtleId)) {
                 manager.touch(turtleId);
             }
+            
+            // CRITICAL: Update persistent tracking immediately to ensure data is always available
+            manager.updateTurtlePosition(turtleId, this.lastChunkPos);
+            manager.updateTurtleFuel(turtleId, turtle.getFuelLevel());
+            
+            // CRITICAL: Save initial state to cache immediately to ensure position/fuel data is available
+            saveStateToUpgradeNBT();
 
             // Clear bootstrap data since turtle is now active
             ChunkLoaderRegistry.clearBootstrapData(turtleId);
@@ -246,7 +253,10 @@ public class ChunkLoaderPeripheral implements IPeripheral {
             this.lastChunkPos = currentChunk;
             stateChanged = true;
         }
-        manager.touch(turtleId);
+        
+        // CRITICAL: Always update persistent tracking data as source of truth
+        manager.updateTurtlePosition(turtleId, currentChunk);
+        manager.updateTurtleFuel(turtleId, turtle.getFuelLevel());
 
         if (radius > 0.0) {
             // Update chunks if the turtle moved or if it should have chunks loaded but doesn't.
