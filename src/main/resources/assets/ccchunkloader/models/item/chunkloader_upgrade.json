@@ -1,0 +1,7 @@
+{
+  "parent": "minecraft:item/generated",
+  "textures": {
+    "layer0": "ccchunkloader:item/chunkloader_upgrade"
+  },
+  "_comment": "Replace this with your Blockbench 3D model JSON when ready!"
+}

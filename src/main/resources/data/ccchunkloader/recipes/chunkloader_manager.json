@@ -1,0 +1,27 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "pattern": [
+    "ESE",
+    "SAS", 
+    "ESE"
+  ],
+  "key": {
+    "E": {
+      "item": "minecraft:stone"
+    },
+    "S": {
+      "item": "minecraft:redstone"
+    },
+    "A": {
+      "item": "ccchunkloader:chunkloader_upgrade"
+    }
+  },
+  "result": {
+    "item": "ccchunkloader:chunkloader_manager",
+    "count": 1
+  },
+  "show_notification": true,
+  "group": "ccchunkloader"
+}
+

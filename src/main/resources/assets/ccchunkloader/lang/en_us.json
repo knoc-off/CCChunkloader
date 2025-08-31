@@ -1,0 +1,11 @@
+{
+  "item.ccchunkloader.chunkloader_upgrade": "Chunkloader Antenna",
+  "item.ccchunkloader.chunkloader_manager": "Chunkloader Manager",
+  "block.ccchunkloader.chunkloader_manager": "Chunkloader Manager",
+  
+  "computercraft.turtle_upgrade.ccchunkloader.chunkloader.name": "Chunkloader Antenna",
+  "computercraft.turtle_upgrade.ccchunkloader.chunkloader.adjective": "Chunkloader",
+  
+  "item.ccchunkloader.chunkloader_upgrade.tooltip": "A powerful antenna that allows turtles to keep chunks loaded",
+  "item.ccchunkloader.chunkloader_manager.tooltip": "A management block for controlling turtle chunkloaders remotely"
+}
