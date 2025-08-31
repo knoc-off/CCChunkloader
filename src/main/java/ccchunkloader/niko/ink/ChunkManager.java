@@ -28,6 +28,8 @@ public class ChunkManager {
     private final Map<UUID, Set<ChunkPos>> turtleChunks = new ConcurrentHashMap<>();
     // Timestamp of last activity for cleanup
     private final Map<UUID, Long> lastTouch = new ConcurrentHashMap<>();
+    // Cache of turtle states for persistence (survives peripheral cleanup)
+    private final Map<UUID, ChunkLoaderPeripheral.SavedState> turtleStateCache = new ConcurrentHashMap<>();
 
     private final ServerWorld world;
     private boolean bootstrapped = false;
@@ -304,6 +306,36 @@ public class ChunkManager {
     }
 
     /**
+     * Update turtle state in cache for persistence
+     * Called whenever a turtle's state changes to ensure dormant turtles can be saved
+     */
+    public synchronized void updateTurtleStateCache(UUID turtleId, ChunkLoaderPeripheral.SavedState state) {
+        if (state != null) {
+            turtleStateCache.put(turtleId, state);
+            LOGGER.debug("Updated turtle state cache for turtle {}: radius={}, fuel={}, wake={}",
+                        turtleId, state.radius, state.fuelLevel, state.wakeOnWorldLoad);
+        } else {
+            turtleStateCache.remove(turtleId);
+            LOGGER.debug("Removed turtle {} from state cache", turtleId);
+        }
+    }
+
+    /**
+     * Get cached turtle state (may be dormant turtle)
+     */
+    public synchronized ChunkLoaderPeripheral.SavedState getCachedTurtleState(UUID turtleId) {
+        return turtleStateCache.get(turtleId);
+    }
+
+    /**
+     * Remove turtle from state cache (called when turtle is completely removed)
+     */
+    public synchronized void removeTurtleFromCache(UUID turtleId) {
+        turtleStateCache.remove(turtleId);
+        LOGGER.debug("Removed turtle {} from state cache", turtleId);
+    }
+
+    /**
      * Get the number of chunks currently loaded by a turtle
      */
     public int getLoadedChunkCount(UUID turtleId) {
@@ -349,8 +381,20 @@ public class ChunkManager {
         }
 
         // PHASE 2: Clean up inactive turtles WITHOUT holding locks (can block safely)
+        // Store turtle state in cache before removing chunks, so dormant turtles can be saved
         for (UUID turtleId : inactiveTurtles) {
             LOGGER.info("Cleaning up inactive turtle chunk loader: {}", turtleId);
+            
+            // Try to preserve state from active peripheral before cleanup
+            ChunkLoaderPeripheral peripheral = ChunkLoaderRegistry.getPeripheral(turtleId);
+            if (peripheral != null) {
+                ChunkLoaderPeripheral.SavedState state = peripheral.getSavedState();
+                if (state != null) {
+                    updateTurtleStateCache(turtleId, state);
+                    LOGGER.debug("Preserved state for inactive turtle {} in cache", turtleId);
+                }
+            }
+            
             removeAllChunks(turtleId);
         }
     }
@@ -446,6 +490,7 @@ public class ChunkManager {
             chunkLoaders.clear();
             turtleChunks.clear();
             lastTouch.clear();
+            turtleStateCache.clear();
         }
 
         // PHASE 2: Unforce chunks WITHOUT holding locks (can block safely)
@@ -478,36 +523,65 @@ public class ChunkManager {
 
     /**
      * Serialize ChunkManager state to NBT for persistent storage
-     * SIMPLIFIED: Only saves turtle positions for registry restoration, not complex chunk data
+     * SIMPLIFIED: Only save essential data needed for bootstrap:
+     * - UUID (turtle identifier)
+     * - lastChunkPos (where to load the turtle)
+     * - fuelLevel (current fuel for bootstrap checks)
+     * - wakeOnWorldLoad (whether turtle should auto-wake)
+     * All other turtle configuration is stored in the turtle's own upgrade NBT
      */
     public synchronized NbtCompound serializeToNbt() {
         NbtCompound nbt = new NbtCompound();
         NbtList turtleStates = new NbtList();
 
         for (UUID turtleId : turtleChunks.keySet()) {
+            ChunkPos lastPosition = null;
+            int fuelLevel = -1;
+            boolean wakeOnWorldLoad = false;
+            boolean isActive = false;
+            
+            // Try to get minimal essential data from active peripheral first
             ChunkLoaderPeripheral chunkLoader = ChunkLoaderRegistry.getPeripheral(turtleId);
             if (chunkLoader != null) {
                 ChunkLoaderPeripheral.SavedState state = chunkLoader.getSavedState();
                 if (state != null) {
-                    NbtCompound stateData = new NbtCompound();
-                    stateData.putString("uuid", turtleId.toString());
-                    stateData.putDouble("radius", state.radius);
-                    if (state.lastChunkPos != null) {
-                        stateData.putInt("lastChunkX", state.lastChunkPos.x);
-                        stateData.putInt("lastChunkZ", state.lastChunkPos.z);
-                    }
-                    stateData.putDouble("fuelDebt", state.fuelDebt);
-                    stateData.putBoolean("wakeOnWorldLoad", state.wakeOnWorldLoad);
-                    stateData.putBoolean("randomTickEnabled", state.randomTickEnabled);
-                    stateData.putInt("fuelLevel", state.fuelLevel);
-                    turtleStates.add(stateData);
+                    lastPosition = state.lastChunkPos;
+                    fuelLevel = state.fuelLevel;
+                    wakeOnWorldLoad = state.wakeOnWorldLoad;
+                    isActive = true;
+                    // Update cache with latest state from active peripheral
+                    turtleStateCache.put(turtleId, state);
                 }
             } else {
-                LOGGER.warn("Could not find a chunk loader for tracked turtle ID {}. It will not be saved.", turtleId);
+                // Fallback to cached state for dormant turtles
+                ChunkLoaderPeripheral.SavedState cachedState = turtleStateCache.get(turtleId);
+                if (cachedState != null) {
+                    lastPosition = cachedState.lastChunkPos;
+                    fuelLevel = cachedState.fuelLevel;
+                    wakeOnWorldLoad = cachedState.wakeOnWorldLoad;
+                    LOGGER.debug("Using cached state for dormant turtle {}", turtleId);
+                }
+            }
+            
+            // Save essential bootstrap data including wakeOnWorldLoad status
+            if (lastPosition != null && fuelLevel >= 0) {
+                NbtCompound stateData = new NbtCompound();
+                stateData.putString("uuid", turtleId.toString());
+                stateData.putInt("lastChunkX", lastPosition.x);
+                stateData.putInt("lastChunkZ", lastPosition.z);
+                stateData.putInt("fuelLevel", fuelLevel);
+                stateData.putBoolean("wakeOnWorldLoad", wakeOnWorldLoad); // CRITICAL: Save wake status!
+                turtleStates.add(stateData);
+                LOGGER.debug("Serialized essential data for turtle {}: active={}, pos=({},{}), fuel={}, wake={}",
+                            turtleId, isActive, lastPosition.x, lastPosition.z, fuelLevel, wakeOnWorldLoad);
+            } else {
+                LOGGER.warn("Could not save essential data for turtle {} - missing position or fuel data", turtleId);
             }
         }
 
         nbt.put("turtleStates", turtleStates);
+        LOGGER.info("Serialized {} turtle bootstrap records to NBT ({} tracked turtles)", 
+                   turtleStates.size(), turtleChunks.size());
         return nbt;
     }
 
@@ -529,6 +603,7 @@ public class ChunkManager {
         turtleChunks.clear();
         lastTouch.clear();
         restoredTurtleStates.clear();
+        turtleStateCache.clear();
 
         if (nbt.contains("turtleStates")) {
             NbtList turtleStatesNbt = nbt.getList("turtleStates", 10);
@@ -536,31 +611,140 @@ public class ChunkManager {
                 NbtCompound stateData = turtleStatesNbt.getCompound(i);
                 try {
                     UUID turtleId = UUID.fromString(stateData.getString("uuid"));
-                    double radius = stateData.getDouble("radius");
                     ChunkPos lastChunkPos = null;
+                    int fuelLevel = -1;
+                    boolean wakeOnWorldLoad = false;
+                    
+                    // Handle both old format (with complex data) and new format (essential only)
                     if (stateData.contains("lastChunkX") && stateData.contains("lastChunkZ")) {
                         lastChunkPos = new ChunkPos(stateData.getInt("lastChunkX"), stateData.getInt("lastChunkZ"));
                     }
-                    double fuelDebt = stateData.getDouble("fuelDebt");
-                    boolean wakeOnWorldLoad = stateData.getBoolean("wakeOnWorldLoad");
-                    boolean randomTickEnabled = stateData.contains("randomTickEnabled") ? stateData.getBoolean("randomTickEnabled") : false;
-                    int fuelLevel = stateData.contains("fuelLevel") ? stateData.getInt("fuelLevel") : -1;
+                    if (stateData.contains("fuelLevel")) {
+                        fuelLevel = stateData.getInt("fuelLevel");
+                    }
+                    if (stateData.contains("wakeOnWorldLoad")) {
+                        wakeOnWorldLoad = stateData.getBoolean("wakeOnWorldLoad");
+                    }
 
-                    ChunkLoaderPeripheral.SavedState state = new ChunkLoaderPeripheral.SavedState(
-                        radius, lastChunkPos, fuelDebt, wakeOnWorldLoad, randomTickEnabled, fuelLevel
+                    // Create bootstrap state with essential data including wake preference
+                    ChunkLoaderPeripheral.SavedState bootstrapState = new ChunkLoaderPeripheral.SavedState(
+                        0.0, // radius - will be loaded from turtle's own NBT
+                        lastChunkPos, 
+                        0.0, // fuelDebt - will be loaded from turtle's own NBT
+                        wakeOnWorldLoad, // CRITICAL: Preserve wake preference!
+                        false, // randomTickEnabled - will be loaded from turtle's own NBT
+                        fuelLevel
                     );
 
+                    // Track turtle for bootstrap purposes
                     turtleChunks.put(turtleId, ConcurrentHashMap.newKeySet());
                     lastTouch.put(turtleId, System.currentTimeMillis());
-                    restoredTurtleStates.put(turtleId, state);
+                    restoredTurtleStates.put(turtleId, bootstrapState);
+                    turtleStateCache.put(turtleId, bootstrapState);
+                    
+                    LOGGER.debug("Restored turtle bootstrap data {}: pos=({},{}), fuel={}, wake={}", 
+                                turtleId, lastChunkPos != null ? lastChunkPos.x : "null", 
+                                lastChunkPos != null ? lastChunkPos.z : "null", fuelLevel, wakeOnWorldLoad);
                 } catch (Exception e) {
-                    LOGGER.error("Failed to restore a turtle state from NBT.", e);
+                    LOGGER.error("Failed to restore turtle bootstrap data from NBT.", e);
                 }
             }
         }
 
-        int toWakeCount = (int) restoredTurtleStates.values().stream().filter(s -> s.wakeOnWorldLoad).count();
-        return new DeserializationResult(restoredTurtleStates.size(), toWakeCount);
+        // Count how many turtles should wake on world load
+        int totalCount = restoredTurtleStates.size();
+        int toWakeCount = (int) restoredTurtleStates.values().stream()
+            .filter(state -> state.wakeOnWorldLoad)
+            .count();
+        
+        LOGGER.info("Deserialized {} turtle bootstrap records from NBT ({} to wake on world load)", 
+                   totalCount, toWakeCount);
+        return new DeserializationResult(totalCount, toWakeCount);
+    }
+
+    /**
+     * Bootstrap a specific turtle on-demand for remote operations
+     * Returns true if turtle was successfully bootstrapped and is now active
+     */
+    public synchronized boolean bootstrapTurtleOnDemand(UUID turtleId) {
+        LOGGER.info("Attempting on-demand bootstrap for turtle {}", turtleId);
+        
+        // Check if turtle is already active
+        if (ChunkLoaderRegistry.getPeripheral(turtleId) != null) {
+            LOGGER.debug("Turtle {} is already active, no bootstrap needed", turtleId);
+            return true;
+        }
+        
+        // Debug: Show what data we have for this turtle
+        boolean inTurtleChunks = turtleChunks.containsKey(turtleId);
+        boolean inStateCache = turtleStateCache.containsKey(turtleId);
+        boolean inRestoredStates = restoredTurtleStates.containsKey(turtleId);
+        LOGGER.info("Turtle {} tracking status: chunks={}, cache={}, restored={}", 
+                   turtleId, inTurtleChunks, inStateCache, inRestoredStates);
+        
+        // Check if we have cached state for this turtle
+        ChunkLoaderPeripheral.SavedState cachedState = turtleStateCache.get(turtleId);
+        if (cachedState == null) {
+            // Check restored states as fallback
+            cachedState = restoredTurtleStates.get(turtleId);
+            if (cachedState != null) {
+                LOGGER.info("Using restored state for turtle {}", turtleId);
+            }
+        }
+        
+        if (cachedState == null) {
+            LOGGER.warn("Cannot bootstrap turtle {} - no cached state available (chunks={}, cache={}, restored={})", 
+                       turtleId, inTurtleChunks, inStateCache, inRestoredStates);
+            return false;
+        }
+        
+        if (cachedState.lastChunkPos == null) {
+            LOGGER.warn("Cannot bootstrap turtle {} - no position available. State: radius={}, fuel={}, wake={}", 
+                       turtleId, cachedState.radius, cachedState.fuelLevel, cachedState.wakeOnWorldLoad);
+            return false;
+        }
+        
+        // Note: We don't check fuel here - just load the turtle and let it handle its own fuel logic
+        // The turtle will disable chunk loading itself if it runs out of fuel
+        
+        LOGGER.info("Bootstrapping turtle {} at chunk {} with {} fuel", 
+                   turtleId, cachedState.lastChunkPos, cachedState.fuelLevel);
+        
+        // Create temporary bootstrap data
+        ChunkLoaderRegistry.updateBootstrapData(
+            turtleId, 
+            world.getRegistryKey(), 
+            cachedState.lastChunkPos, 
+            cachedState.fuelLevel, 
+            true  // Temporarily set wake=true for bootstrap
+        );
+        
+        // Force-load the turtle's chunk to wake it up
+        world.setChunkForced(cachedState.lastChunkPos.x, cachedState.lastChunkPos.z, true);
+        LOGGER.info("Force-loaded chunk {} to bootstrap turtle {}", cachedState.lastChunkPos, turtleId);
+        
+        // Wait for turtle to initialize (give it a few server ticks)
+        final int MAX_WAIT_TICKS = 10;
+        final int TICK_DELAY_MS = 50; // 20 ticks per second
+        
+        for (int i = 0; i < MAX_WAIT_TICKS; i++) {
+            try {
+                Thread.sleep(TICK_DELAY_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+            
+            // Check if turtle peripheral is now available
+            if (ChunkLoaderRegistry.getPeripheral(turtleId) != null) {
+                LOGGER.info("Successfully bootstrapped turtle {} after {}ms", turtleId, i * TICK_DELAY_MS);
+                return true;
+            }
+        }
+        
+        LOGGER.warn("Bootstrap timeout for turtle {} - peripheral not available after {}ms", 
+                   turtleId, MAX_WAIT_TICKS * TICK_DELAY_MS);
+        return false;
     }
 
     /**

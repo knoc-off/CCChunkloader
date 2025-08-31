@@ -297,16 +297,19 @@ public class ChunkLoaderPeripheral implements IPeripheral {
 
 
     public void cleanup() {
-        // Save final state to upgrade NBT before cleanup
+        // Save final state to upgrade NBT and cache before cleanup
         saveStateToUpgradeNBT();
 
         // Unregister from active peripherals
         ChunkLoaderRegistry.unregister(turtleId);
 
         // Remove any chunks this peripheral was loading
+        // BUT keep turtle state in cache for persistence
         if (turtle.getLevel() instanceof ServerWorld serverWorld) {
             ChunkManager manager = ChunkManager.get(serverWorld);
             manager.removeAllChunks(turtleId);
+            // Don't remove from cache here - turtle might come back later
+            LOGGER.debug("Cleaned up turtle {} but preserved state in cache", turtleId);
         }
     }
 
@@ -535,6 +538,9 @@ public class ChunkLoaderPeripheral implements IPeripheral {
 
         // Update bootstrap data in registry
         updateBootstrapData();
+        
+        // Update ChunkManager cache for persistence of dormant turtles
+        updateChunkManagerCache();
 
         LOGGER.debug("Saved state to upgrade NBT: radius={}, fuelDebt={}, wake={}, randomTick={}, lastChunk={}",
                     radius, fuelDebt, wakeOnWorldLoad, randomTickEnabled, lastChunkPos);
@@ -552,6 +558,17 @@ public class ChunkLoaderPeripheral implements IPeripheral {
                 turtle.getFuelLevel(),
                 wakeOnWorldLoad
             );
+        }
+    }
+    
+    /**
+     * Update ChunkManager cache with current state for persistence
+     */
+    private void updateChunkManagerCache() {
+        if (turtle.getLevel() instanceof ServerWorld serverWorld) {
+            ChunkManager manager = ChunkManager.get(serverWorld);
+            SavedState currentState = getSavedState();
+            manager.updateTurtleStateCache(turtleId, currentState);
         }
     }
 

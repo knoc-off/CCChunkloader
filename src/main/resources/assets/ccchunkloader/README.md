@@ -1,4 +1,0 @@
-# CCChunkloader Assets
-
-## Directory Structure
-

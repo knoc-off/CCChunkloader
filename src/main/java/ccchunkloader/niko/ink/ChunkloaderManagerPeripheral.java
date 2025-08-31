@@ -14,6 +14,8 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.List;
 import java.util.ArrayList;
+import java.util.Set;
+import java.util.HashSet;
 
 /**
  * Simplified peripheral interface for the Chunkloader Manager block.
@@ -48,22 +50,29 @@ public class ChunkloaderManagerPeripheral implements IPeripheral {
         ChunkLoaderPeripheral chunkLoader = ChunkLoaderRegistry.getPeripheral(turtleId);
 
         if (chunkLoader == null) {
-            throw new LuaException("Turtle with ID " + turtleIdString + " is not active");
+            // Try to bootstrap the turtle on-demand
+            if (world instanceof ServerWorld serverWorld) {
+                ChunkManager manager = ChunkManager.get(serverWorld);
+                if (manager.bootstrapTurtleOnDemand(turtleId)) {
+                    chunkLoader = ChunkLoaderRegistry.getPeripheral(turtleId);
+                }
+            }
+            
+            if (chunkLoader == null) {
+                throw new LuaException("Turtle with ID " + turtleIdString + " not found. The turtle may have been removed or is out of fuel.");
+            }
         }
 
         ChunkLoaderPeripheral.TurtleInfo info = chunkLoader.getTurtleInfo();
 
         Map<String, Object> result = new HashMap<>();
         result.put("turtleId", info.turtleId.toString());
-        result.put("position", Map.of(
-            "x", info.position.getX(),
-            "y", info.position.getY(),
-            "z", info.position.getZ()
-        ));
+        // Position removed for privacy/security - turtle location should not be exposed
         result.put("fuelLevel", info.fuelLevel);
         result.put("radius", info.radius);
         result.put("loadedChunks", info.loadedChunks);
         result.put("fuelRate", info.fuelRate);
+        result.put("active", true); // This turtle is currently active since we got info
 
         return result;
     }
@@ -81,7 +90,17 @@ public class ChunkloaderManagerPeripheral implements IPeripheral {
         ChunkLoaderPeripheral chunkLoader = ChunkLoaderRegistry.getPeripheral(turtleId);
 
         if (chunkLoader == null) {
-            throw new LuaException("Turtle with ID " + turtleIdString + " is not active. Make sure the turtle is loaded and has the chunkloader upgrade installed.");
+            // Try to bootstrap the turtle on-demand
+            if (world instanceof ServerWorld serverWorld) {
+                ChunkManager manager = ChunkManager.get(serverWorld);
+                if (manager.bootstrapTurtleOnDemand(turtleId)) {
+                    chunkLoader = ChunkLoaderRegistry.getPeripheral(turtleId);
+                }
+            }
+            
+            if (chunkLoader == null) {
+                throw new LuaException("Turtle with ID " + turtleIdString + " not found. The turtle may have been removed, is out of fuel, or bootstrap failed.");
+            }
         }
 
         // Fuel check for active peripherals
@@ -114,15 +133,12 @@ public class ChunkloaderManagerPeripheral implements IPeripheral {
 
                 Map<String, Object> turtleData = new HashMap<>();
                 turtleData.put("turtleId", info.turtleId.toString());
-                turtleData.put("position", Map.of(
-                    "x", info.position.getX(),
-                    "y", info.position.getY(),
-                    "z", info.position.getZ()
-                ));
+                // Position removed for privacy/security - turtle location should not be exposed
                 turtleData.put("fuelLevel", info.fuelLevel);
                 turtleData.put("radius", info.radius);
                 turtleData.put("loadedChunks", info.loadedChunks);
                 turtleData.put("fuelRate", info.fuelRate);
+                turtleData.put("active", true);
 
                 result.add(turtleData);
             }
@@ -141,7 +157,17 @@ public class ChunkloaderManagerPeripheral implements IPeripheral {
         ChunkLoaderPeripheral chunkLoader = ChunkLoaderRegistry.getPeripheral(turtleId);
 
         if (chunkLoader == null) {
-            throw new LuaException("Turtle with ID " + turtleIdString + " is not active");
+            // Try to bootstrap the turtle on-demand
+            if (world instanceof ServerWorld serverWorld) {
+                ChunkManager manager = ChunkManager.get(serverWorld);
+                if (manager.bootstrapTurtleOnDemand(turtleId)) {
+                    chunkLoader = ChunkLoaderRegistry.getPeripheral(turtleId);
+                }
+            }
+            
+            if (chunkLoader == null) {
+                throw new LuaException("Turtle with ID " + turtleIdString + " not found. The turtle may have been removed, is out of fuel, or bootstrap failed.");
+            }
         }
 
         chunkLoader.setWakeOnWorldLoad(wake);
@@ -157,10 +183,32 @@ public class ChunkloaderManagerPeripheral implements IPeripheral {
         ChunkLoaderPeripheral chunkLoader = ChunkLoaderRegistry.getPeripheral(turtleId);
 
         if (chunkLoader == null) {
-            throw new LuaException("Turtle with ID " + turtleIdString + " is not active");
+            // Try to bootstrap the turtle on-demand
+            if (world instanceof ServerWorld serverWorld) {
+                ChunkManager manager = ChunkManager.get(serverWorld);
+                if (manager.bootstrapTurtleOnDemand(turtleId)) {
+                    chunkLoader = ChunkLoaderRegistry.getPeripheral(turtleId);
+                }
+            }
+            
+            if (chunkLoader == null) {
+                throw new LuaException("Turtle with ID " + turtleIdString + " not found. The turtle may have been removed, is out of fuel, or bootstrap failed.");
+            }
         }
 
         return chunkLoader.getWakeOnWorldLoad();
+    }
+
+    /**
+     * Get diagnostic information about a turtle's status
+     */
+    @LuaFunction
+    public final String getTurtleDiagnostic(String turtleIdString) throws LuaException {
+        UUID turtleId = parseUUID(turtleIdString);
+        if (world instanceof ServerWorld serverWorld) {
+            return ChunkLoaderRegistry.getTurtleDiagnostic(turtleId, serverWorld);
+        }
+        return "Cannot get diagnostic - world is not ServerWorld";
     }
 
     // Helper method to parse UUID strings

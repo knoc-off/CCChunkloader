@@ -113,15 +113,28 @@ public class CCChunkloader implements ModInitializer {
 	}
 
 	private void onServerTick(MinecraftServer server) {
-		tickCounter++;
-		if (tickCounter >= Config.CLEANUP_INTERVAL_TICKS) {
-			tickCounter = 0;
+		// Time-based cleanup is DISABLED BY DEFAULT because it destroys user turtle data inappropriately
+		// Only run time-based cleanup if explicitly enabled in config (NOT recommended)
+		if (Config.ENABLE_TIME_BASED_CLEANUP) {
+			tickCounter++;
+			if (tickCounter >= Config.CLEANUP_INTERVAL_TICKS) {
+				tickCounter = 0;
 
-			server.getWorlds().forEach(world -> {
-				ChunkManager manager = ChunkManager.get(world);
-				manager.cleanup(Config.MAX_INACTIVE_TIME_MS);
-			});
+				server.getWorlds().forEach(world -> {
+					ChunkManager manager = ChunkManager.get(world);
+					manager.cleanup(Config.MAX_INACTIVE_TIME_MS);
+					LOGGER.warn("Time-based cleanup executed - this may have removed dormant turtles permanently!");
+				});
+			}
 		}
+		
+		// TODO: Add proper cleanup triggers:
+		// 1. When turtle upgrade is unequipped (peripheral removal detection)
+		// 2. When same turtle gets new UUID (upgrade re-equipped) 
+		// 3. Manual admin commands for explicit turtle removal
+		
+		// By default, turtles persist indefinitely until explicitly removed
+		// This prevents data loss and matches user expectations for "dormant turtle" behavior
 	}
 
 	private void onWorldLoad(MinecraftServer server, ServerWorld world) {
@@ -199,13 +212,13 @@ public class CCChunkloader implements ModInitializer {
 					savedState.wakeOnWorldLoad
 				);
 
-
 				if (savedState.wakeOnWorldLoad) {
 					wokenCount++;
-					// LOGGER.info("Added bootstrap data for turtle {} at position {} (saved: radius={}, fuelDebt={})",
-					// 		   turtleId, savedState.lastChunkPos, savedState.radius, savedState.fuelDebt);
+					LOGGER.debug("Registered turtle {} for bootstrap wake-up at position {}", 
+								turtleId, savedState.lastChunkPos);
 				} else {
-					LOGGER.warn("Failed to wake turtle {} - may be out of fuel or no saved position", turtleId);
+					LOGGER.debug("Registered dormant turtle {} at position {} (wakeOnWorldLoad = false)", 
+								turtleId, savedState.lastChunkPos);
 				}
 			} else {
 				LOGGER.debug("Registered dormant turtle {} at position {} (saved: radius={}, fuelDebt={})",

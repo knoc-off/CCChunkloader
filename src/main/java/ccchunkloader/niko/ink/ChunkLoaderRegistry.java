@@ -122,6 +122,37 @@ public class ChunkLoaderRegistry {
     }
 
     /**
+     * Check if a turtle can potentially be bootstrapped
+     * This checks if we have bootstrap data or if the turtle exists in any ChunkManager cache
+     */
+    public static boolean canBootstrap(UUID turtleId, net.minecraft.server.world.ServerWorld world) {
+        // Check if already in bootstrap data
+        if (BOOTSTRAP_DATA.containsKey(turtleId)) {
+            return true;
+        }
+        
+        // Check if turtle exists in ChunkManager cache
+        if (world != null) {
+            ChunkManager manager = ChunkManager.get(world);
+            return manager.getCachedTurtleState(turtleId) != null;
+        }
+        
+        return false;
+    }
+    
+    /**
+     * Get diagnostic information about a turtle's availability
+     */
+    public static String getTurtleDiagnostic(UUID turtleId, net.minecraft.server.world.ServerWorld world) {
+        boolean isActive = isActive(turtleId);
+        boolean hasBootstrapData = BOOTSTRAP_DATA.containsKey(turtleId);
+        boolean hasCache = (world != null) ? ChunkManager.get(world).getCachedTurtleState(turtleId) != null : false;
+        
+        return String.format("Turtle %s: active=%s, bootstrap=%s, cached=%s", 
+                           turtleId, isActive, hasBootstrapData, hasCache);
+    }
+
+    /**
      * Clear all data (for mod shutdown/world unload)
      */
     public static void clearAll() {
