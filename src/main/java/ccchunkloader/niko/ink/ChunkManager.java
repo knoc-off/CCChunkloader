@@ -34,6 +34,8 @@ public class ChunkManager {
     private final Map<UUID, ChunkPos> persistentPositions = new ConcurrentHashMap<>();
     // Persistent fuel tracking (source of truth for turtle fuel levels)
     private final Map<UUID, Integer> persistentFuelLevels = new ConcurrentHashMap<>();
+    // Radius overrides for turtles (applied when peripheral is created, cleared after use)
+    private final Map<UUID, Double> radiusOverrides = new ConcurrentHashMap<>();
 
     private final ServerWorld world;
     private boolean bootstrapped = false;
@@ -345,6 +347,45 @@ public class ChunkManager {
     public Integer getPersistentFuelLevel(UUID turtleId) {
         return persistentFuelLevels.get(turtleId);
     }
+    
+    /**
+     * Set a radius override for a turtle (persisted in world NBT)
+     * This will be applied when the turtle's peripheral is created and then cleared
+     */
+    public void setRadiusOverride(UUID turtleId, double radius) {
+        radiusOverrides.put(turtleId, radius);
+        LOGGER.info("Set radius override for turtle {}: {}", turtleId, radius);
+        // Save to world immediately to persist across chunk loads
+        markDirty();
+    }
+    
+    /**
+     * Get and clear radius override for a turtle
+     * Returns null if no override exists
+     */
+    public Double getAndClearRadiusOverride(UUID turtleId) {
+        Double override = radiusOverrides.remove(turtleId);
+        if (override != null) {
+            LOGGER.info("Retrieved and cleared radius override for turtle {}: {}", turtleId, override);
+            markDirty();
+        }
+        return override;
+    }
+    
+    /**
+     * Check if a turtle has a radius override pending
+     */
+    public boolean hasRadiusOverride(UUID turtleId) {
+        return radiusOverrides.containsKey(turtleId);
+    }
+    
+    /**
+     * Mark the persistent state as dirty to ensure it gets saved
+     */
+    private void markDirty() {
+        ChunkManagerPersistentState.getWorldState(world).markDirty();
+    }
+    
 
     /**
      * Update turtle state in cache for persistence
@@ -575,6 +616,7 @@ public class ChunkManager {
             restoredTurtleStates.remove(turtleId);
             persistentPositions.remove(turtleId);
             persistentFuelLevels.remove(turtleId);
+            radiusOverrides.remove(turtleId);
         }
         
         LOGGER.info("Turtle {} permanently removed from ChunkManager", turtleId);
@@ -677,6 +719,17 @@ public class ChunkManager {
         }
 
         nbt.put("turtleStates", turtleStates);
+        
+        // Serialize radius overrides
+        if (!radiusOverrides.isEmpty()) {
+            NbtCompound radiusOverridesNbt = new NbtCompound();
+            for (Map.Entry<UUID, Double> entry : radiusOverrides.entrySet()) {
+                radiusOverridesNbt.putDouble(entry.getKey().toString(), entry.getValue());
+            }
+            nbt.put("radiusOverrides", radiusOverridesNbt);
+            LOGGER.info("Serialized {} radius overrides to NBT", radiusOverrides.size());
+        }
+        
         LOGGER.info("Serialized {} turtle bootstrap records to NBT ({} tracked turtles)", 
                    turtleStates.size(), turtleChunks.size());
         return nbt;
@@ -754,6 +807,22 @@ public class ChunkManager {
                     LOGGER.error("Failed to restore turtle bootstrap data from NBT.", e);
                 }
             }
+        }
+
+        // Deserialize radius overrides
+        if (nbt.contains("radiusOverrides")) {
+            NbtCompound radiusOverridesNbt = nbt.getCompound("radiusOverrides");
+            for (String uuidString : radiusOverridesNbt.getKeys()) {
+                try {
+                    UUID turtleId = UUID.fromString(uuidString);
+                    double radius = radiusOverridesNbt.getDouble(uuidString);
+                    radiusOverrides.put(turtleId, radius);
+                    LOGGER.debug("Restored radius override for turtle {}: {}", turtleId, radius);
+                } catch (Exception e) {
+                    LOGGER.error("Failed to restore radius override for UUID {}: {}", uuidString, e.getMessage());
+                }
+            }
+            LOGGER.info("Deserialized {} radius overrides from NBT", radiusOverrides.size());
         }
 
         // Count how many turtles should wake on world load

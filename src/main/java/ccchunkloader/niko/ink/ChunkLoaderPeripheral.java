@@ -63,6 +63,13 @@ public class ChunkLoaderPeripheral implements IPeripheral {
             manager.updateTurtlePosition(turtleId, this.lastChunkPos);
             manager.updateTurtleFuel(turtleId, turtle.getFuelLevel());
             
+            // CRITICAL: Check for radius override and apply it (for chunk load/unload cycles)
+            Double radiusOverride = manager.getAndClearRadiusOverride(turtleId);
+            if (radiusOverride != null) {
+                LOGGER.info("Applying radius override for turtle {}: {} -> {}", turtleId, this.radius, radiusOverride);
+                this.radius = radiusOverride;
+            }
+            
             // CRITICAL: Save initial state to cache immediately to ensure position/fuel data is available
             saveStateToUpgradeNBT();
 

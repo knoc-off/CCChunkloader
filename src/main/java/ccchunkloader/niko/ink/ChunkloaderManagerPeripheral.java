@@ -90,9 +90,13 @@ public class ChunkloaderManagerPeripheral implements IPeripheral {
         ChunkLoaderPeripheral chunkLoader = ChunkLoaderRegistry.getPeripheral(turtleId);
 
         if (chunkLoader == null) {
-            // Try to bootstrap the turtle on-demand
+            // Turtle is dormant - set radius override and try to bootstrap
             if (world instanceof ServerWorld serverWorld) {
                 ChunkManager manager = ChunkManager.get(serverWorld);
+                
+                // CRITICAL: Set radius override in world NBT so it applies during chunk load/unload cycles
+                manager.setRadiusOverride(turtleId, radius);
+                
                 if (manager.bootstrapTurtleOnDemand(turtleId)) {
                     chunkLoader = ChunkLoaderRegistry.getPeripheral(turtleId);
                 }
@@ -100,6 +104,12 @@ public class ChunkloaderManagerPeripheral implements IPeripheral {
             
             if (chunkLoader == null) {
                 throw new LuaException("Turtle with ID " + turtleIdString + " not found. The turtle may have been removed, is out of fuel, or bootstrap failed.");
+            }
+        } else {
+            // Turtle is active - also set override in case it goes dormant and wakes up again
+            if (world instanceof ServerWorld serverWorld) {
+                ChunkManager manager = ChunkManager.get(serverWorld);
+                manager.setRadiusOverride(turtleId, radius);
             }
         }
 
