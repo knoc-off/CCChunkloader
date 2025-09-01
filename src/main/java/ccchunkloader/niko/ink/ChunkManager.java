@@ -724,13 +724,20 @@ public class ChunkManager {
                 fuelLevel = 1; // Default to 1 fuel as requested
             }
             
-            // Save essential bootstrap data including wakeOnWorldLoad status
+            // Save essential bootstrap data including wakeOnWorldLoad status and computer ID
             NbtCompound stateData = new NbtCompound();
             stateData.putString("uuid", turtleId.toString());
             stateData.putInt("lastChunkX", lastPosition.x);
             stateData.putInt("lastChunkZ", lastPosition.z);
             stateData.putInt("fuelLevel", fuelLevel);
             stateData.putBoolean("wakeOnWorldLoad", wakeOnWorldLoad);
+            
+            // CRITICAL: Save computer ID for UUID lifecycle management
+            Integer computerId = uuidToComputerId.get(turtleId);
+            if (computerId != null) {
+                stateData.putInt("computerId", computerId);
+            }
+            
             turtleStates.add(stateData);
             LOGGER.debug("Serialized essential data for turtle {}: active={}, pos=({},{}), fuel={}, wake={}",
                         turtleId, isActive, lastPosition.x, lastPosition.z, fuelLevel, wakeOnWorldLoad);
@@ -802,6 +809,8 @@ public class ChunkManager {
         turtleChunks.clear();
         lastTouch.clear();
         restoredTurtleStates.clear();
+        computerIdToUUIDs.clear();
+        uuidToComputerId.clear();
         // DON'T clear turtleStateCache - merge with existing data to preserve any runtime state
 
         if (nbt.contains("turtleStates")) {
@@ -849,6 +858,14 @@ public class ChunkManager {
                         persistentFuelLevels.put(turtleId, fuelLevel);
                     }
                     
+                    // CRITICAL: Restore computer ID mapping if available
+                    if (stateData.contains("computerId")) {
+                        int computerId = stateData.getInt("computerId");
+                        computerIdToUUIDs.computeIfAbsent(computerId, k -> ConcurrentHashMap.newKeySet()).add(turtleId);
+                        uuidToComputerId.put(turtleId, computerId);
+                        LOGGER.debug("Restored computer ID mapping: UUID {} -> Computer {}", turtleId, computerId);
+                    }
+                    
                     LOGGER.debug("Restored turtle bootstrap data {}: pos=({},{}), fuel={}, wake={}", 
                                 turtleId, lastChunkPos != null ? lastChunkPos.x : "null", 
                                 lastChunkPos != null ? lastChunkPos.z : "null", fuelLevel, wakeOnWorldLoad);
@@ -882,6 +899,8 @@ public class ChunkManager {
         
         LOGGER.info("Deserialized {} turtle bootstrap records from NBT ({} to wake on world load)", 
                    totalCount, toWakeCount);
+        LOGGER.info("Restored computer ID mappings for {} computers with {} total UUIDs", 
+                   computerIdToUUIDs.size(), uuidToComputerId.size());
         return new DeserializationResult(totalCount, toWakeCount);
     }
 

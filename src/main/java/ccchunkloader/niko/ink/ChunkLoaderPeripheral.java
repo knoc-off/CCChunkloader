@@ -35,6 +35,7 @@ public class ChunkLoaderPeripheral implements IPeripheral {
     private double fuelDebt = 0.0; // Accumulated fractional fuel debt
     private boolean wakeOnWorldLoad = false; // Whether to auto-activate on world load
     private boolean randomTickEnabled = false; // Whether random ticking is enabled for this turtle's chunks
+    private boolean computerIdRegistered = false; // Whether UUID has been registered with computer ID
 
     public ChunkLoaderPeripheral(ITurtleAccess turtle, TurtleSide side) {
         this.turtle = turtle;
@@ -63,18 +64,7 @@ public class ChunkLoaderPeripheral implements IPeripheral {
             manager.updateTurtlePosition(turtleId, this.lastChunkPos);
             manager.updateTurtleFuel(turtleId, turtle.getFuelLevel());
             
-            // CRITICAL: Register UUID with computer ID for lifecycle management
-            Integer computerId = getTurtleComputerId();
-            if (computerId != null) {
-                manager.registerUUIDForComputer(computerId, turtleId);
-                LOGGER.debug("Registered turtle {} (UUID: {}) with computer ID {}", 
-                           turtle.getPosition(), turtleId, computerId);
-                
-                // CRITICAL: Validate UUIDs for this computer to clean up orphaned UUIDs
-                validateComputerUUIDs(manager, computerId, serverWorld);
-            } else {
-                LOGGER.warn("Could not determine computer ID for turtle {} at {}", turtleId, turtle.getPosition());
-            }
+            // Computer ID registration deferred until ServerComputer is available (see updateChunkLoading)
             
             // CRITICAL: Check for radius override and apply it (for chunk load/unload cycles)
             Double radiusOverride = manager.getAndClearRadiusOverride(turtleId);
@@ -277,6 +267,20 @@ public class ChunkLoaderPeripheral implements IPeripheral {
         // CRITICAL: Always update persistent tracking data as source of truth
         manager.updateTurtlePosition(turtleId, currentChunk);
         manager.updateTurtleFuel(turtleId, turtle.getFuelLevel());
+
+        // DEFERRED: Register computer ID when ServerComputer becomes available
+        if (!computerIdRegistered) {
+            Integer computerId = getTurtleComputerId();
+            if (computerId != null) {
+                manager.registerUUIDForComputer(computerId, turtleId);
+                LOGGER.info("Registered turtle {} (UUID: {}) with computer ID {} [DEFERRED]", 
+                           turtle.getPosition(), turtleId, computerId);
+                
+                // Validate UUIDs for this computer to clean up orphaned UUIDs
+                validateComputerUUIDs(manager, computerId, serverWorld);
+                computerIdRegistered = true;
+            }
+        }
 
         if (radius > 0.0) {
             // Update chunks if the turtle moved or if it should have chunks loaded but doesn't.
@@ -694,14 +698,14 @@ public class ChunkLoaderPeripheral implements IPeripheral {
                     if (computer != null) {
                         return computer.getID();
                     } else {
-                        LOGGER.warn("Turtle {} has no ServerComputer instance", turtleId);
+                        LOGGER.debug("Turtle {} has no ServerComputer instance (computer not ready yet)", turtleId);
                     }
                 } else {
                     LOGGER.warn("Block entity at turtle position {} is not a TurtleBlockEntity: {}", 
                                turtle.getPosition(), blockEntity != null ? blockEntity.getClass().getName() : "null");
                 }
             } catch (Exception e) {
-                LOGGER.warn("Failed to get computer ID for turtle {}: {}", turtleId, e.getMessage());
+                LOGGER.debug("Failed to get computer ID for turtle {} (computer not ready): {}", turtleId, e.getMessage());
             }
         }
         return null;

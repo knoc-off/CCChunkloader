@@ -67,7 +67,7 @@ public class ChunkLoaderUpgrade extends AbstractTurtleUpgrade {
 
             var computer = turtleEntity.getServerComputer();
             if (computer == null) {
-                LOGGER.warn("Cannot cleanup UUIDs - no ServerComputer instance");
+                LOGGER.debug("Cannot cleanup UUIDs - no ServerComputer instance (computer not ready yet)");
                 return;
             }
 
