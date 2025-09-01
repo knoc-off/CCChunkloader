@@ -4,7 +4,12 @@ import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import net.minecraft.server.command.ServerCommandSource;
+import net.minecraft.server.world.ServerWorld;
 import net.minecraft.text.Text;
+
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
 
 import static net.minecraft.server.command.CommandManager.argument;
 import static net.minecraft.server.command.CommandManager.literal;
@@ -34,6 +39,49 @@ public class ChunkloaderCommand {
                 showAllConfigValues(ctx.getSource());
                 return 1;
             }))
+            .then(literal("debug")
+                .then(literal("uuids").executes(ctx -> {
+                    showAllUUIDs(ctx.getSource());
+                    return 1;
+                }))
+                .then(literal("computer").then(argument("computer_id", StringArgumentType.word()).executes(ctx -> {
+                    String computerIdStr = StringArgumentType.getString(ctx, "computer_id");
+                    try {
+                        int computerId = Integer.parseInt(computerIdStr);
+                        showComputerUUIDs(ctx.getSource(), computerId);
+                    } catch (NumberFormatException e) {
+                        ctx.getSource().sendError(Text.literal("Invalid computer ID: " + computerIdStr));
+                    }
+                    return 1;
+                })))
+                .then(literal("validate").then(argument("computer_id", StringArgumentType.word()).executes(ctx -> {
+                    String computerIdStr = StringArgumentType.getString(ctx, "computer_id");
+                    try {
+                        int computerId = Integer.parseInt(computerIdStr);
+                        validateComputer(ctx.getSource(), computerId);
+                    } catch (NumberFormatException e) {
+                        ctx.getSource().sendError(Text.literal("Invalid computer ID: " + computerIdStr));
+                    }
+                    return 1;
+                })))
+                .then(literal("orphans").executes(ctx -> {
+                    showOrphanedUUIDs(ctx.getSource());
+                    return 1;
+                }))
+                .then(literal("purge").then(argument("uuid", StringArgumentType.word()).executes(ctx -> {
+                    String uuidStr = StringArgumentType.getString(ctx, "uuid");
+                    try {
+                        UUID uuid = UUID.fromString(uuidStr);
+                        purgeUUID(ctx.getSource(), uuid);
+                    } catch (IllegalArgumentException e) {
+                        ctx.getSource().sendError(Text.literal("Invalid UUID format: " + uuidStr));
+                    }
+                    return 1;
+                })))
+                .then(literal("stats").executes(ctx -> {
+                    showTrackingStats(ctx.getSource());
+                    return 1;
+                })))
             .then(literal("get").then(argument("key", StringArgumentType.word()).executes(ctx -> {
                 String key = StringArgumentType.getString(ctx, "key");
                 switch (key) {
@@ -112,6 +160,10 @@ public class ChunkloaderCommand {
         source.sendFeedback(() -> Text.literal("§e/ccchunkloader list §7- Show all config values"), false);
         source.sendFeedback(() -> Text.literal("§e/ccchunkloader get <key> §7- Get a config value"), false);
         source.sendFeedback(() -> Text.literal("§e/ccchunkloader set <key> <value> §7- Set a config value"), false);
+        source.sendFeedback(() -> Text.literal("§6Debug Commands:"), false);
+        source.sendFeedback(() -> Text.literal("§e/ccchunkloader debug uuids §7- List all tracked UUIDs"), false);
+        source.sendFeedback(() -> Text.literal("§e/ccchunkloader debug computer <id> §7- Show UUIDs for computer"), false);
+        source.sendFeedback(() -> Text.literal("§e/ccchunkloader debug stats §7- Show tracking statistics"), false);
         source.sendFeedback(() -> Text.literal("§7Use §e/ccchunkloader help <command> §7for detailed info"), false);
     }
 
@@ -138,9 +190,19 @@ public class ChunkloaderCommand {
                 source.sendFeedback(() -> Text.literal("§7Shows all config keys and their current values"), false);
                 source.sendFeedback(() -> Text.literal("§eUsage: §f/ccchunkloader list"), false);
                 break;
+            case "debug":
+                source.sendFeedback(() -> Text.literal("§6=== /ccchunkloader debug ==="), false);
+                source.sendFeedback(() -> Text.literal("§7Debug commands for UUID lifecycle management"), false);
+                source.sendFeedback(() -> Text.literal("§eSubcommands:"), false);
+                source.sendFeedback(() -> Text.literal("§f  uuids §7- List all tracked UUIDs by computer"), false);
+                source.sendFeedback(() -> Text.literal("§f  computer <id> §7- Show UUIDs for specific computer"), false);
+                source.sendFeedback(() -> Text.literal("§f  orphans §7- List UUIDs without computer mapping"), false);
+                source.sendFeedback(() -> Text.literal("§f  purge <uuid> §7- Force remove specific UUID"), false);
+                source.sendFeedback(() -> Text.literal("§f  stats §7- Show tracking statistics"), false);
+                break;
             default:
                 source.sendFeedback(() -> Text.literal("§cUnknown command: " + command), false);
-                source.sendFeedback(() -> Text.literal("§7Available commands: §eget, set, list, help"), false);
+                source.sendFeedback(() -> Text.literal("§7Available commands: §eget, set, list, debug, help"), false);
                 break;
         }
     }
@@ -162,5 +224,152 @@ public class ChunkloaderCommand {
         source.sendFeedback(() -> Text.literal("§e  MAX_INACTIVE_TIME_MS: §f" + Config.MAX_INACTIVE_TIME_MS + " §7(max inactive time)"), false);
         
         source.sendFeedback(() -> Text.literal("§7Use §e/ccchunkloader set <key> <value> §7to change values"), false);
+    }
+
+    private static void showAllUUIDs(ServerCommandSource source) {
+        source.sendFeedback(() -> Text.literal("§6=== All Tracked UUIDs ==="), false);
+        
+        if (!(source.getWorld() instanceof ServerWorld)) {
+            source.sendError(Text.literal("Command must be run in a server world"));
+            return;
+        }
+        
+        ServerWorld serverWorld = (ServerWorld) source.getWorld();
+        ChunkManager manager = ChunkManager.get(serverWorld);
+        Set<Integer> computerIds = manager.getAllComputerIds();
+        
+        if (computerIds.isEmpty()) {
+            source.sendFeedback(() -> Text.literal("§7No computers with tracked UUIDs"), false);
+            return;
+        }
+        
+        for (int computerId : computerIds) {
+            Set<UUID> uuids = manager.getUUIDsForComputer(computerId);
+            source.sendFeedback(() -> Text.literal("§eComputer " + computerId + ": §f" + uuids.size() + " UUIDs"), false);
+            for (UUID uuid : uuids) {
+                boolean isActive = ChunkLoaderRegistry.isActive(uuid);
+                String status = isActive ? "§aACTIVE" : "§7DORMANT";
+                source.sendFeedback(() -> Text.literal("  §7" + uuid + " " + status), false);
+            }
+        }
+    }
+
+    private static void showComputerUUIDs(ServerCommandSource source, int computerId) {
+        source.sendFeedback(() -> Text.literal("§6=== Computer " + computerId + " UUIDs ==="), false);
+        
+        if (!(source.getWorld() instanceof ServerWorld)) {
+            source.sendError(Text.literal("Command must be run in a server world"));
+            return;
+        }
+        
+        ServerWorld serverWorld = (ServerWorld) source.getWorld();
+        ChunkManager manager = ChunkManager.get(serverWorld);
+        Set<UUID> uuids = manager.getUUIDsForComputer(computerId);
+        
+        if (uuids.isEmpty()) {
+            source.sendFeedback(() -> Text.literal("§7No UUIDs tracked for computer " + computerId), false);
+            return;
+        }
+        
+        source.sendFeedback(() -> Text.literal("§7Found " + uuids.size() + " UUIDs:"), false);
+        for (UUID uuid : uuids) {
+            boolean isActive = ChunkLoaderRegistry.isActive(uuid);
+            String status = isActive ? "§aACTIVE" : "§7DORMANT";
+            source.sendFeedback(() -> Text.literal("§f" + uuid + " " + status), false);
+        }
+    }
+
+    private static void validateComputer(ServerCommandSource source, int computerId) {
+        source.sendFeedback(() -> Text.literal("§6=== Validating Computer " + computerId + " ==="), false);
+        
+        if (!(source.getWorld() instanceof ServerWorld)) {
+            source.sendError(Text.literal("Command must be run in a server world"));
+            return;
+        }
+        
+        source.sendFeedback(() -> Text.literal("§7Manual validation is not safe - validation only occurs when turtle is loaded and active"), false);
+        source.sendFeedback(() -> Text.literal("§7UUIDs are automatically validated when chunkloader peripherals are created"), false);
+        source.sendFeedback(() -> Text.literal("§7Use §e/ccchunkloader debug computer " + computerId + " §7to see current UUIDs"), false);
+    }
+
+    private static void showOrphanedUUIDs(ServerCommandSource source) {
+        source.sendFeedback(() -> Text.literal("§6=== Orphaned UUIDs ==="), false);
+        
+        if (!(source.getWorld() instanceof ServerWorld)) {
+            source.sendError(Text.literal("Command must be run in a server world"));
+            return;
+        }
+        
+        ServerWorld serverWorld = (ServerWorld) source.getWorld();
+        ChunkManager manager = ChunkManager.get(serverWorld);
+        Set<UUID> allTrackedUUIDs = manager.getRestoredTurtleIds();
+        
+        int orphanCount = 0;
+        for (UUID uuid : allTrackedUUIDs) {
+            Integer computerId = manager.getComputerIdForUUID(uuid);
+            if (computerId == null) {
+                source.sendFeedback(() -> Text.literal("§c" + uuid + " §7(no computer ID mapping)"), false);
+                orphanCount++;
+            }
+        }
+        
+        final int finalOrphanCount = orphanCount;
+        if (finalOrphanCount == 0) {
+            source.sendFeedback(() -> Text.literal("§7No orphaned UUIDs found"), false);
+        } else {
+            source.sendFeedback(() -> Text.literal("§7Found " + finalOrphanCount + " orphaned UUIDs"), false);
+        }
+    }
+
+    private static void purgeUUID(ServerCommandSource source, UUID uuid) {
+        source.sendFeedback(() -> Text.literal("§6=== Purging UUID " + uuid + " ==="), false);
+        
+        if (!(source.getWorld() instanceof ServerWorld)) {
+            source.sendError(Text.literal("Command must be run in a server world"));
+            return;
+        }
+        
+        ServerWorld serverWorld = (ServerWorld) source.getWorld();
+        ChunkManager manager = ChunkManager.get(serverWorld);
+        
+        // Check if UUID exists
+        Integer computerId = manager.getComputerIdForUUID(uuid);
+        boolean isTracked = manager.getRestoredTurtleIds().contains(uuid);
+        boolean isActive = ChunkLoaderRegistry.isActive(uuid);
+        
+        if (!isTracked) {
+            source.sendError(Text.literal("UUID " + uuid + " is not tracked"));
+            return;
+        }
+        
+        if (isActive) {
+            source.sendFeedback(() -> Text.literal("§cWARNING: UUID " + uuid + " is currently ACTIVE!"), false);
+        }
+        
+        // Permanently remove the UUID
+        ChunkManager.permanentlyRemoveTurtleFromWorld(serverWorld, uuid);
+        ChunkLoaderRegistry.permanentlyRemoveTurtle(uuid);
+        
+        source.sendFeedback(() -> Text.literal("§aPurged UUID " + uuid + " from computer " + computerId), false);
+    }
+
+    private static void showTrackingStats(ServerCommandSource source) {
+        source.sendFeedback(() -> Text.literal("§6=== UUID Tracking Statistics ==="), false);
+        
+        if (!(source.getWorld() instanceof ServerWorld)) {
+            source.sendError(Text.literal("Command must be run in a server world"));
+            return;
+        }
+        
+        ServerWorld serverWorld = (ServerWorld) source.getWorld();
+        ChunkManager manager = ChunkManager.get(serverWorld);
+        Map<String, Object> stats = manager.getComputerIdStats();
+        
+        source.sendFeedback(() -> Text.literal("§7Total Computers: §f" + stats.get("totalComputers")), false);
+        source.sendFeedback(() -> Text.literal("§7Total UUIDs: §f" + stats.get("totalUUIDs")), false);
+        source.sendFeedback(() -> Text.literal("§7Orphaned UUIDs: §f" + stats.get("orphanedUUIDs")), false);
+        
+        int activeCount = ChunkLoaderRegistry.getAllPeripherals().size();
+        source.sendFeedback(() -> Text.literal("§7Active Peripherals: §f" + activeCount), false);
     }
 }

@@ -12,6 +12,7 @@ import net.minecraft.util.Identifier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.HashSet;
 import java.util.Set;
 import java.util.UUID;
 
@@ -52,33 +53,65 @@ public class ChunkLoaderUpgrade extends AbstractTurtleUpgrade {
     }
     
     /**
-     * Clean up old turtle UUIDs that might be at this position from previous peripheral attachments
+     * Clean up old turtle UUIDs using computer ID-based validation
      * This handles the case where a turtle peripheral is unequipped and re-equipped
      */
     private void cleanupOldTurtleUUIDs(ITurtleAccess turtle, TurtleSide side, UUID currentUUID, ServerWorld serverWorld) {
-        // Check if there are any other turtle UUIDs that might be associated with this turtle position
-        // that are different from the current UUID (indicating peripheral was re-equipped)
-        
-        ChunkManager chunkManager = ChunkManager.get(serverWorld);
-        
-        // Get all tracked turtles and check if any are at the same position with different UUIDs
-        Set<UUID> trackedTurtles = chunkManager.getRestoredTurtleIds();
-        
-        for (UUID trackedId : trackedTurtles) {
-            if (!trackedId.equals(currentUUID)) {
-                ChunkLoaderPeripheral.SavedState state = chunkManager.getCachedTurtleState(trackedId);
-                if (state != null && state.lastChunkPos != null) {
-                    // Check if this old turtle was at the same position as the current turtle
-                    if (state.lastChunkPos.equals(new net.minecraft.util.math.ChunkPos(turtle.getPosition()))) {
-                        LOGGER.info("Found old turtle UUID {} at current position, permanently removing (replaced by {})", 
-                                   trackedId, currentUUID);
-                        
-                        // Permanently remove the old turtle data
-                        ChunkManager.permanentlyRemoveTurtleFromWorld(serverWorld, trackedId);
-                        ChunkLoaderRegistry.permanentlyRemoveTurtle(trackedId);
-                    }
+        try {
+            // Get the turtle's computer ID
+            var blockEntity = serverWorld.getBlockEntity(turtle.getPosition());
+            if (!(blockEntity instanceof dan200.computercraft.shared.turtle.blocks.TurtleBlockEntity turtleEntity)) {
+                LOGGER.warn("Cannot cleanup UUIDs - block entity is not a TurtleBlockEntity");
+                return;
+            }
+
+            var computer = turtleEntity.getServerComputer();
+            if (computer == null) {
+                LOGGER.warn("Cannot cleanup UUIDs - no ServerComputer instance");
+                return;
+            }
+
+            int computerId = computer.getID();
+            ChunkManager chunkManager = ChunkManager.get(serverWorld);
+            
+            // Get all UUIDs currently stored for this computer
+            Set<UUID> storedUUIDs = chunkManager.getUUIDsForComputer(computerId);
+            
+            // Detect currently equipped chunkloaders
+            Set<UUID> currentlyEquippedUUIDs = new HashSet<>();
+            
+            // Check LEFT side
+            var leftUpgrade = turtleEntity.getUpgrade(TurtleSide.LEFT);
+            if (leftUpgrade instanceof ChunkLoaderUpgrade) {
+                UUID leftUUID = getTurtleUUID(turtle, TurtleSide.LEFT);
+                currentlyEquippedUUIDs.add(leftUUID);
+            }
+            
+            // Check RIGHT side  
+            var rightUpgrade = turtleEntity.getUpgrade(TurtleSide.RIGHT);
+            if (rightUpgrade instanceof ChunkLoaderUpgrade) {
+                UUID rightUUID = getTurtleUUID(turtle, TurtleSide.RIGHT);
+                currentlyEquippedUUIDs.add(rightUUID);
+            }
+
+            LOGGER.info("Computer {} cleanup: stored UUIDs={}, currently equipped={}", 
+                       computerId, storedUUIDs.size(), currentlyEquippedUUIDs.size());
+
+            // Remove any stored UUIDs that aren't currently equipped
+            Set<UUID> toRemove = new HashSet<>(storedUUIDs);
+            toRemove.removeAll(currentlyEquippedUUIDs);
+            
+            for (UUID orphanedUUID : toRemove) {
+                if (!orphanedUUID.equals(currentUUID)) { // Don't remove the UUID we're currently creating
+                    LOGGER.info("Computer {} cleanup: removing orphaned UUID {} (no longer equipped)", 
+                               computerId, orphanedUUID);
+                    ChunkManager.permanentlyRemoveTurtleFromWorld(serverWorld, orphanedUUID);
+                    ChunkLoaderRegistry.permanentlyRemoveTurtle(orphanedUUID);
                 }
             }
+            
+        } catch (Exception e) {
+            LOGGER.error("Failed to cleanup UUIDs for turtle {}: {}", currentUUID, e.getMessage());
         }
     }
 

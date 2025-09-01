@@ -63,6 +63,19 @@ public class ChunkLoaderPeripheral implements IPeripheral {
             manager.updateTurtlePosition(turtleId, this.lastChunkPos);
             manager.updateTurtleFuel(turtleId, turtle.getFuelLevel());
             
+            // CRITICAL: Register UUID with computer ID for lifecycle management
+            Integer computerId = getTurtleComputerId();
+            if (computerId != null) {
+                manager.registerUUIDForComputer(computerId, turtleId);
+                LOGGER.debug("Registered turtle {} (UUID: {}) with computer ID {}", 
+                           turtle.getPosition(), turtleId, computerId);
+                
+                // CRITICAL: Validate UUIDs for this computer to clean up orphaned UUIDs
+                validateComputerUUIDs(manager, computerId, serverWorld);
+            } else {
+                LOGGER.warn("Could not determine computer ID for turtle {} at {}", turtleId, turtle.getPosition());
+            }
+            
             // CRITICAL: Check for radius override and apply it (for chunk load/unload cycles)
             Double radiusOverride = manager.getAndClearRadiusOverride(turtleId);
             if (radiusOverride != null) {
@@ -623,5 +636,74 @@ public class ChunkLoaderPeripheral implements IPeripheral {
         } catch (Exception e) {
             LOGGER.error("Failed to resume chunk loading for turtle {}: {}", turtleId, e.getMessage());
         }
+    }
+
+    /**
+     * Validate UUIDs for a computer by checking currently equipped chunkloaders
+     * This removes orphaned UUIDs when peripherals are unequipped
+     */
+    private void validateComputerUUIDs(ChunkManager manager, int computerId, ServerWorld serverWorld) {
+        try {
+            // Get the turtle block entity to check currently equipped upgrades
+            var blockEntity = serverWorld.getBlockEntity(turtle.getPosition());
+            if (!(blockEntity instanceof dan200.computercraft.shared.turtle.blocks.TurtleBlockEntity turtleEntity)) {
+                LOGGER.warn("Cannot validate computer {} UUIDs - not a TurtleBlockEntity", computerId);
+                return;
+            }
+
+            // Detect currently equipped chunkloaders
+            Set<UUID> currentlyEquippedUUIDs = new HashSet<>();
+            
+            // Check LEFT side
+            var leftUpgrade = turtleEntity.getUpgrade(dan200.computercraft.api.turtle.TurtleSide.LEFT);
+            if (leftUpgrade instanceof ChunkLoaderUpgrade) {
+                UUID leftUUID = ChunkLoaderUpgrade.getTurtleUUID(turtle, dan200.computercraft.api.turtle.TurtleSide.LEFT);
+                currentlyEquippedUUIDs.add(leftUUID);
+                LOGGER.debug("Computer {} has chunkloader on LEFT side with UUID {}", computerId, leftUUID);
+            }
+            
+            // Check RIGHT side
+            var rightUpgrade = turtleEntity.getUpgrade(dan200.computercraft.api.turtle.TurtleSide.RIGHT);
+            if (rightUpgrade instanceof ChunkLoaderUpgrade) {
+                UUID rightUUID = ChunkLoaderUpgrade.getTurtleUUID(turtle, dan200.computercraft.api.turtle.TurtleSide.RIGHT);
+                currentlyEquippedUUIDs.add(rightUUID);
+                LOGGER.debug("Computer {} has chunkloader on RIGHT side with UUID {}", computerId, rightUUID);
+            }
+
+            LOGGER.info("Computer {} validation: found {} currently equipped chunkloaders", 
+                       computerId, currentlyEquippedUUIDs.size());
+
+            // Validate stored UUIDs against currently equipped ones
+            manager.validateUUIDsForComputer(computerId, currentlyEquippedUUIDs);
+            
+        } catch (Exception e) {
+            LOGGER.error("Failed to validate UUIDs for computer {}: {}", computerId, e.getMessage());
+        }
+    }
+
+    /**
+     * Get the computer ID for this turtle (used for UUID lifecycle management)
+     */
+    private Integer getTurtleComputerId() {
+        if (turtle.getLevel() instanceof ServerWorld serverWorld) {
+            try {
+                // Access the turtle's block entity to get the computer ID
+                var blockEntity = serverWorld.getBlockEntity(turtle.getPosition());
+                if (blockEntity instanceof dan200.computercraft.shared.turtle.blocks.TurtleBlockEntity turtleEntity) {
+                    var computer = turtleEntity.getServerComputer();
+                    if (computer != null) {
+                        return computer.getID();
+                    } else {
+                        LOGGER.warn("Turtle {} has no ServerComputer instance", turtleId);
+                    }
+                } else {
+                    LOGGER.warn("Block entity at turtle position {} is not a TurtleBlockEntity: {}", 
+                               turtle.getPosition(), blockEntity != null ? blockEntity.getClass().getName() : "null");
+                }
+            } catch (Exception e) {
+                LOGGER.warn("Failed to get computer ID for turtle {}: {}", turtleId, e.getMessage());
+            }
+        }
+        return null;
     }
 }

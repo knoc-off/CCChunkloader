@@ -9,6 +9,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -36,6 +37,10 @@ public class ChunkManager {
     private final Map<UUID, Integer> persistentFuelLevels = new ConcurrentHashMap<>();
     // Radius overrides for turtles (applied when peripheral is created, cleared after use)
     private final Map<UUID, Double> radiusOverrides = new ConcurrentHashMap<>();
+    // Computer ID to UUIDs mapping (for lifecycle management)
+    private final Map<Integer, Set<UUID>> computerIdToUUIDs = new ConcurrentHashMap<>();
+    // UUID to Computer ID reverse mapping
+    private final Map<UUID, Integer> uuidToComputerId = new ConcurrentHashMap<>();
 
     private final ServerWorld world;
     private boolean bootstrapped = false;
@@ -617,6 +622,19 @@ public class ChunkManager {
             persistentPositions.remove(turtleId);
             persistentFuelLevels.remove(turtleId);
             radiusOverrides.remove(turtleId);
+            
+            // Remove from computer ID tracking
+            Integer computerId = uuidToComputerId.remove(turtleId);
+            if (computerId != null) {
+                Set<UUID> computerUUIDs = computerIdToUUIDs.get(computerId);
+                if (computerUUIDs != null) {
+                    computerUUIDs.remove(turtleId);
+                    if (computerUUIDs.isEmpty()) {
+                        computerIdToUUIDs.remove(computerId);
+                    }
+                }
+                LOGGER.debug("Removed UUID {} from computer ID {} tracking", turtleId, computerId);
+            }
         }
         
         LOGGER.info("Turtle {} permanently removed from ChunkManager", turtleId);
@@ -1001,6 +1019,64 @@ public class ChunkManager {
                 }
             }
         }
+    }
+
+    /**
+     * Register a UUID for a specific computer ID
+     */
+    public synchronized void registerUUIDForComputer(int computerId, UUID turtleId) {
+        computerIdToUUIDs.computeIfAbsent(computerId, k -> ConcurrentHashMap.newKeySet()).add(turtleId);
+        uuidToComputerId.put(turtleId, computerId);
+        LOGGER.debug("Registered UUID {} for computer ID {}", turtleId, computerId);
+    }
+
+    /**
+     * Get all UUIDs associated with a computer ID
+     */
+    public synchronized Set<UUID> getUUIDsForComputer(int computerId) {
+        return Set.copyOf(computerIdToUUIDs.getOrDefault(computerId, Set.of()));
+    }
+
+    /**
+     * Get computer ID for a UUID
+     */
+    public synchronized Integer getComputerIdForUUID(UUID turtleId) {
+        return uuidToComputerId.get(turtleId);
+    }
+
+    /**
+     * Validate UUIDs for a computer - remove any that aren't currently equipped
+     * Only call this when the turtle is confirmed loaded and active
+     */
+    public synchronized void validateUUIDsForComputer(int computerId, Set<UUID> currentlyEquippedUUIDs) {
+        Set<UUID> storedUUIDs = computerIdToUUIDs.get(computerId);
+        if (storedUUIDs == null) return;
+
+        Set<UUID> toRemove = new HashSet<>(storedUUIDs);
+        toRemove.removeAll(currentlyEquippedUUIDs);
+
+        for (UUID orphanedUUID : toRemove) {
+            LOGGER.info("Removing orphaned UUID {} from computer {} (no longer equipped)", orphanedUUID, computerId);
+            permanentlyRemoveTurtle(orphanedUUID);
+        }
+    }
+
+    /**
+     * Get all computer IDs that have registered UUIDs
+     */
+    public synchronized Set<Integer> getAllComputerIds() {
+        return Set.copyOf(computerIdToUUIDs.keySet());
+    }
+
+    /**
+     * Get statistics about computer ID tracking
+     */
+    public synchronized Map<String, Object> getComputerIdStats() {
+        Map<String, Object> stats = new HashMap<>();
+        stats.put("totalComputers", computerIdToUUIDs.size());
+        stats.put("totalUUIDs", uuidToComputerId.size());
+        stats.put("orphanedUUIDs", uuidToComputerId.size() - computerIdToUUIDs.values().stream().mapToInt(Set::size).sum());
+        return stats;
     }
 
 
