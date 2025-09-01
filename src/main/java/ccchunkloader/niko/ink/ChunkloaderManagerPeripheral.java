@@ -53,7 +53,8 @@ public class ChunkloaderManagerPeripheral implements IPeripheral {
             // Try to bootstrap the turtle on-demand
             if (world instanceof ServerWorld serverWorld) {
                 ChunkManager manager = ChunkManager.get(serverWorld);
-                if (manager.bootstrapTurtleOnDemand(turtleId)) {
+                ChunkManager.BootstrapResult result = manager.bootstrapTurtleOnDemand(turtleId);
+                if (result.success) {
                     chunkLoader = ChunkLoaderRegistry.getPeripheral(turtleId);
                 }
             }
@@ -97,13 +98,43 @@ public class ChunkloaderManagerPeripheral implements IPeripheral {
                 // CRITICAL: Set radius override in world NBT so it applies during chunk load/unload cycles
                 manager.setRadiusOverride(turtleId, radius);
                 
-                if (manager.bootstrapTurtleOnDemand(turtleId)) {
+                ChunkManager.BootstrapResult result = manager.bootstrapTurtleOnDemand(turtleId);
+                if (result.success) {
                     chunkLoader = ChunkLoaderRegistry.getPeripheral(turtleId);
+                } else if ("TIMEOUT".equals(result.errorCode)) {
+                    // Bootstrap timed out but turtle might still be loading - wait a bit more
+                    LOGGER.info("Bootstrap timed out for turtle {}, waiting additional time...", turtleId);
+                    
+                    for (int i = 0; i < 10; i++) { // Additional 500ms wait
+                        try {
+                            Thread.sleep(50);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        }
+                        
+                        chunkLoader = ChunkLoaderRegistry.getPeripheral(turtleId);
+                        if (chunkLoader != null) {
+                            LOGGER.info("Turtle {} became available after extended wait ({}ms)", turtleId, i * 50);
+                            break;
+                        }
+                    }
                 }
             }
             
+            // Final check - if still no peripheral but we set the override, that's still partial success
             if (chunkLoader == null) {
-                throw new LuaException("Turtle with ID " + turtleIdString + " not found. The turtle may have been removed, is out of fuel, or bootstrap failed.");
+                // Check if we at least set the radius override successfully
+                if (world instanceof ServerWorld serverWorld) {
+                    ChunkManager manager = ChunkManager.get(serverWorld);
+                    if (manager.hasRadiusOverride(turtleId)) {
+                        // Radius override is queued - turtle will get it when it loads
+                        LOGGER.info("Radius override queued for turtle {} - will be applied when turtle loads", turtleId);
+                        return true; // Return success since override is set
+                    }
+                }
+                
+                throw new LuaException("Turtle with ID " + turtleIdString + " not found. The turtle may have been removed, is out of fuel, or is still loading.");
             }
         } else {
             // Turtle is active - also set override in case it goes dormant and wakes up again
@@ -170,7 +201,8 @@ public class ChunkloaderManagerPeripheral implements IPeripheral {
             // Try to bootstrap the turtle on-demand
             if (world instanceof ServerWorld serverWorld) {
                 ChunkManager manager = ChunkManager.get(serverWorld);
-                if (manager.bootstrapTurtleOnDemand(turtleId)) {
+                ChunkManager.BootstrapResult result = manager.bootstrapTurtleOnDemand(turtleId);
+                if (result.success) {
                     chunkLoader = ChunkLoaderRegistry.getPeripheral(turtleId);
                 }
             }
@@ -196,7 +228,8 @@ public class ChunkloaderManagerPeripheral implements IPeripheral {
             // Try to bootstrap the turtle on-demand
             if (world instanceof ServerWorld serverWorld) {
                 ChunkManager manager = ChunkManager.get(serverWorld);
-                if (manager.bootstrapTurtleOnDemand(turtleId)) {
+                ChunkManager.BootstrapResult result = manager.bootstrapTurtleOnDemand(turtleId);
+                if (result.success) {
                     chunkLoader = ChunkLoaderRegistry.getPeripheral(turtleId);
                 }
             }

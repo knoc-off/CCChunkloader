@@ -747,6 +747,37 @@ public class ChunkManager {
             this.toWake = toWake;
         }
     }
+    
+    /**
+     * A simple record to hold the results of bootstrap attempts.
+     */
+    public static class BootstrapResult {
+        public final boolean success;
+        public final String errorCode;
+        public final String message;
+
+        public BootstrapResult(boolean success, String errorCode, String message) {
+            this.success = success;
+            this.errorCode = errorCode;
+            this.message = message;
+        }
+        
+        public static BootstrapResult success() {
+            return new BootstrapResult(true, "SUCCESS", "Turtle successfully bootstrapped");
+        }
+        
+        public static BootstrapResult alreadyActive() {
+            return new BootstrapResult(true, "ALREADY_ACTIVE", "Turtle is already active");
+        }
+        
+        public static BootstrapResult noData() {
+            return new BootstrapResult(false, "NO_DATA", "No cached data available for turtle");
+        }
+        
+        public static BootstrapResult timeout() {
+            return new BootstrapResult(false, "TIMEOUT", "Bootstrap timed out - turtle may still be loading");
+        }
+    }
 
     public synchronized DeserializationResult deserializeFromNbt(NbtCompound nbt) {
         chunkLoaders.clear();
@@ -838,15 +869,15 @@ public class ChunkManager {
 
     /**
      * Bootstrap a specific turtle on-demand for remote operations
-     * Returns true if turtle was successfully bootstrapped and is now active
+     * Returns BootstrapResult with success status and error information
      */
-    public synchronized boolean bootstrapTurtleOnDemand(UUID turtleId) {
+    public synchronized BootstrapResult bootstrapTurtleOnDemand(UUID turtleId) {
         LOGGER.info("Attempting on-demand bootstrap for turtle {}", turtleId);
         
         // Check if turtle is already active
         if (ChunkLoaderRegistry.getPeripheral(turtleId) != null) {
             LOGGER.debug("Turtle {} is already active, no bootstrap needed", turtleId);
-            return true;
+            return BootstrapResult.alreadyActive();
         }
         
         // Debug: Show what data we have for this turtle
@@ -869,13 +900,13 @@ public class ChunkManager {
         if (cachedState == null) {
             LOGGER.warn("Cannot bootstrap turtle {} - no cached state available (chunks={}, cache={}, restored={})", 
                        turtleId, inTurtleChunks, inStateCache, inRestoredStates);
-            return false;
+            return BootstrapResult.noData();
         }
         
         if (cachedState.lastChunkPos == null) {
             LOGGER.warn("Cannot bootstrap turtle {} - no position available. State: radius={}, fuel={}, wake={}", 
                        turtleId, cachedState.radius, cachedState.fuelLevel, cachedState.wakeOnWorldLoad);
-            return false;
+            return BootstrapResult.noData();
         }
         
         // Note: We don't check fuel here - just load the turtle and let it handle its own fuel logic
@@ -898,7 +929,7 @@ public class ChunkManager {
         LOGGER.info("Force-loaded chunk {} to bootstrap turtle {}", cachedState.lastChunkPos, turtleId);
         
         // Wait for turtle to initialize (give it a few server ticks)
-        final int MAX_WAIT_TICKS = 10;
+        final int MAX_WAIT_TICKS = 20; // Increased from 10 to 20 for 1000ms total
         final int TICK_DELAY_MS = 50; // 20 ticks per second
         
         for (int i = 0; i < MAX_WAIT_TICKS; i++) {
@@ -912,13 +943,13 @@ public class ChunkManager {
             // Check if turtle peripheral is now available
             if (ChunkLoaderRegistry.getPeripheral(turtleId) != null) {
                 LOGGER.info("Successfully bootstrapped turtle {} after {}ms", turtleId, i * TICK_DELAY_MS);
-                return true;
+                return BootstrapResult.success();
             }
         }
         
-        LOGGER.warn("Bootstrap timeout for turtle {} - peripheral not available after {}ms", 
+        LOGGER.info("Bootstrap timeout for turtle {} - peripheral not available after {}ms (turtle may still be loading)", 
                    turtleId, MAX_WAIT_TICKS * TICK_DELAY_MS);
-        return false;
+        return BootstrapResult.timeout();
     }
 
     /**
