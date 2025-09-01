@@ -50,6 +50,11 @@ dependencies {
 	modImplementation "cc.tweaked:cc-tweaked-1.20.1-fabric-api:1.116.1"
 	modImplementation "cc.tweaked:cc-tweaked-1.20.1-fabric:1.116.1"  // Full impl for mixins
 	
+	// Test dependencies
+	testImplementation "org.junit.jupiter:junit-jupiter-api:5.8.2"
+	testImplementation "org.junit.jupiter:junit-jupiter-engine:5.8.2"
+	testImplementation "org.mockito:mockito-core:4.6.1"
+	testImplementation "org.mockito:mockito-junit-jupiter:4.6.1"
 }
 
 processResources {
@@ -62,6 +67,10 @@ processResources {
 
 tasks.withType(JavaCompile).configureEach {
 	it.options.release = 17
+}
+
+test {
+	useJUnitPlatform()
 }
 
 java {

@@ -64,15 +64,13 @@ public class ChunkloaderManagerPeripheral implements IPeripheral {
             }
         }
 
-        ChunkLoaderPeripheral.TurtleInfo info = chunkLoader.getTurtleInfo();
-
         Map<String, Object> result = new HashMap<>();
-        result.put("turtleId", info.turtleId.toString());
+        result.put("turtleId", chunkLoader.getTurtleId().toString());
         // Position removed for privacy/security - turtle location should not be exposed
-        result.put("fuelLevel", info.fuelLevel);
-        result.put("radius", info.radius);
-        result.put("loadedChunks", info.loadedChunks);
-        result.put("fuelRate", info.fuelRate);
+        result.put("fuelLevel", chunkLoader.getFuelLevel());
+        result.put("radius", chunkLoader.getRadius());
+        result.put("loadedChunks", chunkLoader.getLoadedChunkCount());
+        result.put("fuelRate", chunkLoader.calculateFuelCost());
         result.put("active", true); // This turtle is currently active since we got info
 
         return result;
@@ -80,6 +78,7 @@ public class ChunkloaderManagerPeripheral implements IPeripheral {
 
     /**
      * Set the chunk loading radius for a turtle
+     * NOW USES NEW ARCHITECTURE - Robust command queue system!
      */
     @LuaFunction
     public final boolean setTurtleRadius(String turtleIdString, double radius) throws LuaException {
@@ -88,76 +87,50 @@ public class ChunkloaderManagerPeripheral implements IPeripheral {
         }
 
         UUID turtleId = parseUUID(turtleIdString);
+        
+        if (!(world instanceof ServerWorld)) {
+            throw new LuaException("Remote management only available on server");
+        }
+        
+        // Use new architecture - command queue with retry logic!
+        TurtleCommandQueue commandQueue = CCChunkloader.getCommandQueue();
+        TurtleStateEvents eventSystem = CCChunkloader.getEventSystem();
+        
+        // Create radius command (no timeout needed - expires in 2 seconds automatically)
+        String commandSource = "manager:" + turtleId.toString().substring(0, 8);
+        TurtleCommandQueue.SetRadiusCommand command = new TurtleCommandQueue.SetRadiusCommand(radius, commandSource);
+        
+        // Queue the command with fuel validation - will reject if insufficient fuel
+        boolean queued = commandQueue.queueCommand(turtleId, command, commandSource);
+        if (!queued) {
+            throw new LuaException("Cannot set radius " + radius + " for turtle " + turtleIdString + " - insufficient fuel or invalid state");
+        }
+        
+        LOGGER.debug("SetRadius({}) queued for turtle {} by {}", radius, turtleId, commandSource);
+        
+        // Check if turtle needs bootstrap and attempt it
         ChunkLoaderPeripheral chunkLoader = ChunkLoaderRegistry.getPeripheral(turtleId);
-
-        if (chunkLoader == null) {
-            // Turtle is dormant - set radius override and try to bootstrap
-            if (world instanceof ServerWorld serverWorld) {
-                ChunkManager manager = ChunkManager.get(serverWorld);
-                
-                // CRITICAL: Set radius override in world NBT so it applies during chunk load/unload cycles
-                manager.setRadiusOverride(turtleId, radius);
-                
-                ChunkManager.BootstrapResult result = manager.bootstrapTurtleOnDemand(turtleId);
-                if (result.success) {
-                    chunkLoader = ChunkLoaderRegistry.getPeripheral(turtleId);
-                } else if ("TIMEOUT".equals(result.errorCode)) {
-                    // Bootstrap timed out but turtle might still be loading - wait a bit more
-                    LOGGER.info("Bootstrap timed out for turtle {}, waiting additional time...", turtleId);
-                    
-                    for (int i = 0; i < 10; i++) { // Additional 500ms wait
-                        try {
-                            Thread.sleep(50);
-                        } catch (InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                            break;
-                        }
-                        
-                        chunkLoader = ChunkLoaderRegistry.getPeripheral(turtleId);
-                        if (chunkLoader != null) {
-                            LOGGER.info("Turtle {} became available after extended wait ({}ms)", turtleId, i * 50);
-                            break;
-                        }
-                    }
-                }
-            }
+        if (chunkLoader == null && world instanceof ServerWorld serverWorld) {
+            // Turtle is dormant - try to bootstrap it
+            LOGGER.debug("Attempting bootstrap for dormant turtle {}", turtleId);
+            ChunkManager manager = ChunkManager.get(serverWorld);
+            ChunkManager.BootstrapResult result = manager.bootstrapTurtleOnDemand(turtleId);
             
-            // Final check - if still no peripheral but we set the override, that's still partial success
-            if (chunkLoader == null) {
-                // Check if we at least set the radius override successfully
-                if (world instanceof ServerWorld serverWorld) {
-                    ChunkManager manager = ChunkManager.get(serverWorld);
-                    if (manager.hasRadiusOverride(turtleId)) {
-                        // Radius override is queued - turtle will get it when it loads
-                        LOGGER.info("Radius override queued for turtle {} - will be applied when turtle loads", turtleId);
-                        return true; // Return success since override is set
-                    }
-                }
-                
-                throw new LuaException("Turtle with ID " + turtleIdString + " not found. The turtle may have been removed, is out of fuel, or is still loading.");
-            }
-        } else {
-            // Turtle is active - also set override in case it goes dormant and wakes up again
-            if (world instanceof ServerWorld serverWorld) {
-                ChunkManager manager = ChunkManager.get(serverWorld);
-                manager.setRadiusOverride(turtleId, radius);
+            if (result.success) {
+                LOGGER.debug("Turtle {} bootstrap successful", turtleId);
+                chunkLoader = ChunkLoaderRegistry.getPeripheral(turtleId);
+            } else {
+                LOGGER.debug("Turtle {} bootstrap failed: {}", turtleId, result.errorCode);
             }
         }
-
-        // Fuel check for active peripherals
-        if (radius > 0) {
-            ChunkLoaderPeripheral.TurtleInfo info = chunkLoader.getTurtleInfo();
-            if (info.fuelLevel == 0) {
-                throw new LuaException("Cannot set radius for turtle " + turtleIdString + ": turtle has no fuel");
-            }
+        
+        // Fire event to trigger command processing
+        eventSystem.fireEvent(new TurtleStateEvents.CommandQueuedEvent(turtleId, command, commandSource));
+        if (chunkLoader != null && radius > 0 && chunkLoader.getFuelLevel() == 0) {
+            throw new LuaException("Warning: Turtle " + turtleIdString + " has no fuel. Command queued but may not execute immediately.");
         }
-
-        boolean success = chunkLoader.setRadiusRemote(radius);
-        if (!success) {
-            throw new LuaException("Failed to set radius for turtle " + turtleIdString);
-        }
-
-        return success;
+        
+        return true; // Command is queued and will be processed reliably
     }
 
     /**
@@ -170,15 +143,13 @@ public class ChunkloaderManagerPeripheral implements IPeripheral {
 
         for (ChunkLoaderPeripheral peripheral : peripherals.values()) {
             if (world instanceof ServerWorld && peripheral.getTurtleLevel() == world) {
-                ChunkLoaderPeripheral.TurtleInfo info = peripheral.getTurtleInfo();
-
                 Map<String, Object> turtleData = new HashMap<>();
-                turtleData.put("turtleId", info.turtleId.toString());
+                turtleData.put("turtleId", peripheral.getTurtleId().toString());
                 // Position removed for privacy/security - turtle location should not be exposed
-                turtleData.put("fuelLevel", info.fuelLevel);
-                turtleData.put("radius", info.radius);
-                turtleData.put("loadedChunks", info.loadedChunks);
-                turtleData.put("fuelRate", info.fuelRate);
+                turtleData.put("fuelLevel", peripheral.getFuelLevel());
+                turtleData.put("radius", peripheral.getRadius());
+                turtleData.put("loadedChunks", peripheral.getLoadedChunkCount());
+                turtleData.put("fuelRate", peripheral.calculateFuelCost());
                 turtleData.put("active", true);
 
                 result.add(turtleData);

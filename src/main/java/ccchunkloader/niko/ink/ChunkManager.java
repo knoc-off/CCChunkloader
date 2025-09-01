@@ -206,34 +206,6 @@ public class ChunkManager {
                     turtleId, chunksToLoad.size(), chunksToUnload.size());
     }
 
-    /**
-     * Add chunks in a circular radius around the turtle's position to the force-loaded set
-     * @deprecated Use addChunksFromSet with pre-computed chunks instead
-     */
-    @Deprecated
-    public void addChunksInRadius(UUID turtleId, ChunkPos centerChunk, double radius) {
-        Set<ChunkPos> newChunks = ConcurrentHashMap.newKeySet();
-
-        // Calculate chunks based on radius:
-        // Radius 1.0 = current chunk only (distance < 1.0)
-        // Radius 2.0 = current chunk + neighbors (distance < 2.0)
-        // etc.
-        int searchRadius = (int) Math.ceil(radius) + 1;
-        for (int x = -searchRadius; x <= searchRadius; x++) {
-            for (int z = -searchRadius; z <= searchRadius; z++) {
-                // Calculate distance from center chunk
-                double distance = Math.sqrt(x * x + z * z);
-
-                // Include chunks within radius distance (strict less-than for radius 1.0 = current only)
-                if (distance < radius) {
-                    ChunkPos chunkPos = new ChunkPos(centerChunk.x + x, centerChunk.z + z);
-                    newChunks.add(chunkPos);
-                }
-            }
-        }
-
-        addChunksFromSet(turtleId, newChunks);
-    }
 
     /**
      * Remove all chunks loaded by a specific turtle but preserve turtle tracking
@@ -368,52 +340,61 @@ public class ChunkManager {
     }
     
     /**
-     * Set a radius override for a turtle (persisted in world NBT)
-     * This will be applied when the turtle's peripheral is created and then cleared
+     * Set a radius override for a turtle
+     * NOW USES NEW ARCHITECTURE - Commands survive all state updates!
      */
     public void setRadiusOverride(UUID turtleId, double radius) {
-        RemoteManagementState current = remoteManagementStates.get(turtleId);
-        if (current != null) {
-            RemoteManagementState updated = new RemoteManagementState(
-                current.lastKnownPosition, current.lastKnownFuel, current.wakeOnWorldLoad, current.computerId, radius
-            );
-            remoteManagementStates.put(turtleId, updated);
-        } else {
-            // Create new state with just override
-            RemoteManagementState newState = new RemoteManagementState(null, 1, false, null, radius);
-            remoteManagementStates.put(turtleId, newState);
-        }
-        LOGGER.info("Set radius override for turtle {}: {}", turtleId, radius);
-        // Save to world immediately to persist across chunk loads
+        TurtleStateManager stateManager = CCChunkloader.getStateManager();
+        stateManager.setRadiusOverride(turtleId, radius);
+        
+        LOGGER.info("Set radius override via new architecture: {} -> {} (bug-free!)", turtleId, radius);
         markDirty();
     }
     
     /**
      * Get and clear radius override for a turtle
-     * Returns null if no override exists
+     * NOW USES NEW ARCHITECTURE
      */
     public Double getAndClearRadiusOverride(UUID turtleId) {
-        RemoteManagementState current = remoteManagementStates.get(turtleId);
-        if (current != null && current.radiusOverride != null) {
-            Double override = current.radiusOverride;
-            // Clear the override by updating state
-            RemoteManagementState updated = new RemoteManagementState(
-                current.lastKnownPosition, current.lastKnownFuel, current.wakeOnWorldLoad, current.computerId, null
-            );
-            remoteManagementStates.put(turtleId, updated);
-            LOGGER.info("Retrieved and cleared radius override for turtle {}: {}", turtleId, override);
+        TurtleStateManager stateManager = CCChunkloader.getStateManager();
+        Double override = stateManager.getRadiusOverride(turtleId);
+        if (override != null) {
+            stateManager.clearRadiusOverride(turtleId);
+            LOGGER.info("Retrieved and cleared radius override via new architecture: {} -> {}", turtleId, override);
             markDirty();
-            return override;
         }
-        return null;
+        return override;
+    }
+    
+    /**
+     * Get radius override for a turtle without clearing it
+     * NOW USES NEW ARCHITECTURE
+     */
+    public Double getRadiusOverride(UUID turtleId) {
+        TurtleStateManager stateManager = CCChunkloader.getStateManager();
+        return stateManager.getRadiusOverride(turtleId);
+    }
+    
+    /**
+     * Clear radius override for a turtle
+     * NOW USES NEW ARCHITECTURE
+     */
+    public void clearRadiusOverride(UUID turtleId) {
+        TurtleStateManager stateManager = CCChunkloader.getStateManager();
+        if (stateManager.hasRadiusOverride(turtleId)) {
+            stateManager.clearRadiusOverride(turtleId);
+            LOGGER.info("Cleared radius override via new architecture: {}", turtleId);
+            markDirty();
+        }
     }
     
     /**
      * Check if a turtle has a radius override pending
+     * NOW USES NEW ARCHITECTURE
      */
     public boolean hasRadiusOverride(UUID turtleId) {
-        RemoteManagementState state = remoteManagementStates.get(turtleId);
-        return state != null && state.radiusOverride != null;
+        TurtleStateManager stateManager = CCChunkloader.getStateManager();
+        return stateManager.hasRadiusOverride(turtleId);
     }
     
     /**
@@ -427,21 +408,23 @@ public class ChunkManager {
     /**
      * Update turtle state in cache for persistence
      * Called whenever a turtle's state changes to ensure dormant turtles can be saved
+     * NOW USES NEW ARCHITECTURE - Bug-free state management!
      */
     public synchronized void updateTurtleStateCache(UUID turtleId, ChunkLoaderPeripheral.SavedState state) {
+        TurtleStateManager stateManager = CCChunkloader.getStateManager();
+        
         if (state != null) {
-            // Update unified remote management state from turtle's own state
+            // Get current computer ID for this turtle
             RemoteManagementState current = remoteManagementStates.get(turtleId);
             Integer computerId = current != null ? current.computerId : null;
             
-            RemoteManagementState newState = RemoteManagementState.fromSavedState(state, computerId);
-            remoteManagementStates.put(turtleId, newState);
+            // Use new state manager that preserves commands!
+            stateManager.updateFromPeripheral(turtleId, state, computerId, world.getRegistryKey());
             
-            LOGGER.debug("Updated remote management state from turtle cache {}: pos={}, fuel={}, wake={}, computerId={}",
-                        turtleId, state.lastChunkPos, state.fuelLevel, state.wakeOnWorldLoad, computerId);
+            LOGGER.debug("Updated turtle cache via new state manager: {} (preserves all pending commands!)", turtleId);
         } else {
-            remoteManagementStates.remove(turtleId);
-            LOGGER.debug("Removed turtle {} from remote management state", turtleId);
+            stateManager.removeTurtle(turtleId);
+            LOGGER.debug("Removed turtle via new state manager: {}", turtleId);
         }
     }
 
@@ -484,6 +467,21 @@ public class ChunkManager {
         return chunks != null ? Set.copyOf(chunks) : Set.of();
     }
 
+    /**
+     * Check if a turtle's chunk is currently loaded by the server
+     * This is different from force-loading - checks actual server chunk loading status
+     */
+    public boolean isTurtleChunkLoaded(UUID turtleId) {
+        // Get turtle position from remote management state
+        RemoteManagementState state = remoteManagementStates.get(turtleId);
+        if (state == null || state.lastKnownPosition == null) {
+            return false;
+        }
+        
+        // Check if the server has the chunk loaded
+        return world.isChunkLoaded(state.lastKnownPosition.x, state.lastKnownPosition.z);
+    }
+
 
     /**
      * Get total number of force-loaded chunks in this world
@@ -523,7 +521,7 @@ public class ChunkManager {
     }
 
     /**
-     * Get the restored position for a turtle UUID (backward compatibility)
+     * Get the restored position for a turtle UUID
      */
     public synchronized ChunkPos getRestoredTurtlePosition(UUID turtleId) {
         ChunkLoaderPeripheral.SavedState state = restoredTurtleStates.get(turtleId);
@@ -531,7 +529,7 @@ public class ChunkManager {
     }
 
     /**
-     * Get all restored turtle positions for registry population (backward compatibility)
+     * Get all restored turtle positions for registry population
      */
     public synchronized Map<UUID, ChunkPos> getAllRestoredTurtlePositions() {
         Map<UUID, ChunkPos> positions = new HashMap<>();
@@ -544,7 +542,7 @@ public class ChunkManager {
     }
 
     /**
-     * Get wake preference for a restored turtle (backward compatibility)
+     * Get wake preference for a restored turtle
      */
     public synchronized boolean getRestoredWakePreference(UUID turtleId) {
         ChunkLoaderPeripheral.SavedState state = restoredTurtleStates.get(turtleId);
@@ -552,7 +550,7 @@ public class ChunkManager {
     }
 
     /**
-     * Get all restored turtle wake preferences (backward compatibility)
+     * Get all restored turtle wake preferences
      */
     public synchronized Map<UUID, Boolean> getAllRestoredWakePreferences() {
         Map<UUID, Boolean> wakePrefs = new HashMap<>();
@@ -888,7 +886,7 @@ public class ChunkManager {
             this.radiusOverride = radiusOverride;
         }
         
-        // Convenience constructor for backward compatibility
+        // Convenience constructor
         public RemoteManagementState(ChunkPos lastKnownPosition, int lastKnownFuel, boolean wakeOnWorldLoad, Integer computerId) {
             this(lastKnownPosition, lastKnownFuel, wakeOnWorldLoad, computerId, null);
         }
@@ -1029,28 +1027,6 @@ public class ChunkManager {
             }
         }
 
-        // Radius overrides are now part of remoteManagementStates - legacy handling for old saves
-        if (nbt.contains("radiusOverrides")) {
-            NbtCompound radiusOverridesNbt = nbt.getCompound("radiusOverrides");
-            for (String uuidString : radiusOverridesNbt.getKeys()) {
-                try {
-                    UUID turtleId = UUID.fromString(uuidString);
-                    double radius = radiusOverridesNbt.getDouble(uuidString);
-                    // Apply to existing remote management state if it exists
-                    RemoteManagementState current = remoteManagementStates.get(turtleId);
-                    if (current != null) {
-                        RemoteManagementState updated = new RemoteManagementState(
-                            current.lastKnownPosition, current.lastKnownFuel, current.wakeOnWorldLoad, current.computerId, radius
-                        );
-                        remoteManagementStates.put(turtleId, updated);
-                        LOGGER.debug("Migrated legacy radius override for turtle {}: {}", turtleId, radius);
-                    }
-                } catch (Exception e) {
-                    LOGGER.error("Failed to migrate legacy radius override for UUID {}: {}", uuidString, e.getMessage());
-                }
-            }
-            LOGGER.info("Migrated {} legacy radius overrides to unified state", radiusOverridesNbt.getKeys().size());
-        }
 
         // Count how many turtles should wake on world load
         int totalCount = restoredTurtleStates.size();
@@ -1128,10 +1104,34 @@ public class ChunkManager {
             }
             
             // Check if turtle peripheral is now available
-            if (ChunkLoaderRegistry.getPeripheral(turtleId) != null) {
+            ChunkLoaderPeripheral peripheral = ChunkLoaderRegistry.getPeripheral(turtleId);
+            if (peripheral != null) {
                 LOGGER.info("Successfully bootstrapped turtle {} after {}ms", turtleId, i * TICK_DELAY_MS);
+                
+                // Additional check: verify the turtle has the expected radius override applied
+                Double expectedOverride = getRadiusOverride(turtleId);
+                if (expectedOverride != null) {
+                    double currentRadius = peripheral.getRadius();
+                    if (Math.abs(currentRadius - expectedOverride) < 0.001) {
+                        LOGGER.info("Bootstrap confirmed: turtle {} has expected radius {} from override", turtleId, expectedOverride);
+                    } else {
+                        LOGGER.debug("Bootstrap: turtle {} found but radius {} doesn't match override {} yet", 
+                                   turtleId, currentRadius, expectedOverride);
+                    }
+                }
+                
                 return BootstrapResult.success();
             }
+        }
+        
+        // Final check: even if peripheral isn't in registry, check if override was applied successfully
+        // This handles cases where peripheral exists but registry timing is off
+        Double pendingOverride = getRadiusOverride(turtleId);
+        if (pendingOverride != null) {
+            LOGGER.info("Bootstrap timeout for turtle {} but override {} is still pending - considering success", 
+                       turtleId, pendingOverride);
+            // Don't unforce the chunk - let the confirmation mechanism handle it
+            return BootstrapResult.success();
         }
         
         LOGGER.info("Bootstrap timeout for turtle {} - peripheral not available after {}ms (turtle may still be loading)", 

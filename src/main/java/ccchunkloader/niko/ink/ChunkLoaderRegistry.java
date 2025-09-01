@@ -114,4 +114,19 @@ public class ChunkLoaderRegistry {
             LOGGER.info("Cleared {} active turtle records", activeCount);
         }
     }
+
+    /**
+     * Clean Slate: Remove multiple peripherals at once (for chunk unload events)
+     */
+    public static void removePeripherals(Set<UUID> turtleIds) {
+        int removed = 0;
+        for (UUID turtleId : turtleIds) {
+            if (ACTIVE_PERIPHERALS.remove(turtleId) != null) {
+                removed++;
+            }
+        }
+        if (removed > 0) {
+            LOGGER.debug("Clean slate: removed {} peripherals from unloaded chunks", removed);
+        }
+    }
 }

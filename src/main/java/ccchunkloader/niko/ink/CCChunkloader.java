@@ -6,6 +6,7 @@ import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerWorldEvents;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerChunkEvents;
 import net.fabricmc.fabric.api.itemgroup.v1.ItemGroupEvents;
 import net.minecraft.block.AbstractBlock;
 import net.minecraft.block.Block;
@@ -22,6 +23,7 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.math.ChunkPos;
+import net.minecraft.util.math.BlockPos;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,6 +36,10 @@ public class CCChunkloader implements ModInitializer {
 	public static final String MOD_ID = "ccchunkloader";
 	private static final Logger LOGGER = LoggerFactory.getLogger(CCChunkloader.class);
 
+	// New unified state management system
+	private static TurtleStateManager stateManager;
+	private static TurtleCommandQueue commandQueue;
+	private static TurtleStateEvents eventSystem;
 
 	public static final Item CHUNKLOADER_UPGRADE = new Item(new Item.Settings());
 
@@ -95,10 +101,14 @@ public class CCChunkloader implements ModInitializer {
 		ServerLifecycleEvents.SERVER_STOPPING.register(this::onServerStopping);
 		ServerWorldEvents.LOAD.register(this::onWorldLoad);
 		ServerWorldEvents.UNLOAD.register(this::onWorldUnload);
+		ServerChunkEvents.CHUNK_UNLOAD.register(this::onChunkUnload);
 		CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> ChunkloaderCommand.register(dispatcher));
 
 		// Initialize RandomTickOrchestrator for turtle random ticking
 		RandomTickOrchestrator.getInstance().initialize();
+		
+		// Initialize new unified state management system
+		initializeNewArchitecture();
 	}
 
 
@@ -133,6 +143,39 @@ public class CCChunkloader implements ModInitializer {
 	private void onWorldUnload(MinecraftServer server, ServerWorld world) {
         saveChunkManagerState(world);
     }
+
+	/**
+	 * Clean Slate Implementation: Remove peripherals when their chunks unload
+	 */
+	private void onChunkUnload(ServerWorld world, net.minecraft.world.chunk.WorldChunk chunk) {
+		ChunkPos chunkPos = chunk.getPos();
+		
+		// Find any active peripherals in this chunk and clean them up immediately
+		Map<UUID, ChunkLoaderPeripheral> activePeripherals = ChunkLoaderRegistry.getAllPeripherals();
+		
+		for (Map.Entry<UUID, ChunkLoaderPeripheral> entry : activePeripherals.entrySet()) {
+			UUID turtleId = entry.getKey();
+			ChunkLoaderPeripheral peripheral = entry.getValue();
+			
+			// Check if this peripheral's turtle is in the unloading chunk
+			if (peripheral.getTurtleLevel() == world) {
+				BlockPos turtlePos = peripheral.getTurtlePosition();
+				if (turtlePos != null) {
+					ChunkPos turtleChunk = new ChunkPos(turtlePos);
+					if (turtleChunk.equals(chunkPos)) {
+						LOGGER.debug("Chunk {} unloaded, removing turtle {} peripheral", chunkPos, turtleId);
+						
+						// Clean up the peripheral immediately - no more zombie peripherals!
+						peripheral.cleanup();
+						
+						// Fire unload event for coordination
+						TurtleStateManager.TurtleState state = stateManager.getState(turtleId);
+						eventSystem.fireEvent(new TurtleStateEvents.TurtleUnloadedEvent(turtleId, state, "chunk_unload"));
+					}
+				}
+			}
+		}
+	}
 
 	/**
      * Save ChunkManager state for a specific world and log a summary.
@@ -202,4 +245,31 @@ public class CCChunkloader implements ModInitializer {
 		}
 	}
 
+	/**
+	 * Initialize the new unified state management architecture
+	 */
+	private void initializeNewArchitecture() {
+		stateManager = new TurtleStateManager();
+		commandQueue = new TurtleCommandQueue();
+		eventSystem = new TurtleStateEvents();
+		
+		// Register default event handlers for automatic coordination
+		DefaultTurtleEventHandlers eventHandlers = new DefaultTurtleEventHandlers(stateManager, commandQueue);
+		eventHandlers.registerDefaultHandlers(eventSystem);
+		
+		LOGGER.info("Initialized new turtle state architecture - radius override bug fix active!");
+	}
+	
+	// Public accessors for the new architecture
+	public static TurtleStateManager getStateManager() {
+		return stateManager;
+	}
+	
+	public static TurtleCommandQueue getCommandQueue() {
+		return commandQueue;
+	}
+	
+	public static TurtleStateEvents getEventSystem() {
+		return eventSystem;
+	}
 }

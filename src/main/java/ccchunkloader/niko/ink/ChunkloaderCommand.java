@@ -78,6 +78,10 @@ public class ChunkloaderCommand {
                     }
                     return 1;
                 })))
+                .then(literal("states").executes(ctx -> {
+                    showStateBreakdown(ctx.getSource());
+                    return 1;
+                }))
                 .then(literal("stats").executes(ctx -> {
                     showTrackingStats(ctx.getSource());
                     return 1;
@@ -151,6 +155,7 @@ public class ChunkloaderCommand {
         source.sendFeedback(() -> Text.literal("§6Debug Commands:"), false);
         source.sendFeedback(() -> Text.literal("§e/ccchunkloader debug uuids §7- List all tracked UUIDs"), false);
         source.sendFeedback(() -> Text.literal("§e/ccchunkloader debug computer <id> §7- Show UUIDs for computer"), false);
+        source.sendFeedback(() -> Text.literal("§e/ccchunkloader debug states §7- Show turtle state breakdown"), false);
         source.sendFeedback(() -> Text.literal("§e/ccchunkloader debug stats §7- Show tracking statistics"), false);
         source.sendFeedback(() -> Text.literal("§7Use §e/ccchunkloader help <command> §7for detailed info"), false);
     }
@@ -184,6 +189,7 @@ public class ChunkloaderCommand {
                 source.sendFeedback(() -> Text.literal("§eSubcommands:"), false);
                 source.sendFeedback(() -> Text.literal("§f  uuids §7- List all tracked UUIDs by computer"), false);
                 source.sendFeedback(() -> Text.literal("§f  computer <id> §7- Show UUIDs for specific computer"), false);
+                source.sendFeedback(() -> Text.literal("§f  states §7- Show turtle state breakdown (active/dormant/loaded)"), false);
                 source.sendFeedback(() -> Text.literal("§f  orphans §7- List UUIDs without computer mapping"), false);
                 source.sendFeedback(() -> Text.literal("§f  purge <uuid> §7- Force remove specific UUID"), false);
                 source.sendFeedback(() -> Text.literal("§f  stats §7- Show tracking statistics"), false);
@@ -232,7 +238,13 @@ public class ChunkloaderCommand {
             source.sendFeedback(() -> Text.literal("§eComputer " + computerId + ": §f" + uuids.size() + " UUIDs"), false);
             for (UUID uuid : uuids) {
                 boolean isActive = ChunkLoaderRegistry.isActive(uuid);
-                String status = isActive ? "§aACTIVE" : "§7DORMANT";
+                boolean isChunkLoaded = manager.isTurtleChunkLoaded(uuid);
+                String status;
+                if (isActive) {
+                    status = isChunkLoaded ? "§aACTIVE_LOADED" : "§6ACTIVE_UNLOADED";
+                } else {
+                    status = "§7DORMANT";
+                }
                 source.sendFeedback(() -> Text.literal("  §7" + uuid + " " + status), false);
             }
         }
@@ -258,7 +270,13 @@ public class ChunkloaderCommand {
         source.sendFeedback(() -> Text.literal("§7Found " + uuids.size() + " UUIDs:"), false);
         for (UUID uuid : uuids) {
             boolean isActive = ChunkLoaderRegistry.isActive(uuid);
-            String status = isActive ? "§aACTIVE" : "§7DORMANT";
+            boolean isChunkLoaded = manager.isTurtleChunkLoaded(uuid);
+            String status;
+            if (isActive) {
+                status = isChunkLoaded ? "§aACTIVE_LOADED" : "§6ACTIVE_UNLOADED";
+            } else {
+                status = "§7DORMANT";
+            }
             source.sendFeedback(() -> Text.literal("§f" + uuid + " " + status), false);
         }
     }
@@ -337,6 +355,61 @@ public class ChunkloaderCommand {
         source.sendFeedback(() -> Text.literal("§aPurged UUID " + uuid + " from computer " + computerId), false);
     }
 
+    private static void showStateBreakdown(ServerCommandSource source) {
+        source.sendFeedback(() -> Text.literal("§6=== Turtle State Breakdown ==="), false);
+        
+        if (!(source.getWorld() instanceof ServerWorld)) {
+            source.sendError(Text.literal("Command must be run in a server world"));
+            return;
+        }
+        
+        ServerWorld serverWorld = (ServerWorld) source.getWorld();
+        ChunkManager manager = ChunkManager.get(serverWorld);
+        Set<UUID> allTrackedUUIDs = manager.getRestoredTurtleIds();
+        
+        if (allTrackedUUIDs.isEmpty()) {
+            source.sendFeedback(() -> Text.literal("§7No tracked turtles"), false);
+            return;
+        }
+        
+        int activeLoadedCount = 0;
+        int activeUnloadedCount = 0;
+        int dormantCount = 0;
+        
+        // Count turtles in each state
+        for (UUID uuid : allTrackedUUIDs) {
+            boolean isActive = ChunkLoaderRegistry.isActive(uuid);
+            boolean isChunkLoaded = manager.isTurtleChunkLoaded(uuid);
+            
+            if (isActive) {
+                if (isChunkLoaded) {
+                    activeLoadedCount++;
+                } else {
+                    activeUnloadedCount++;
+                }
+            } else {
+                dormantCount++;
+            }
+        }
+        
+        // Display breakdown (capture variables as final)
+        final int finalActiveLoadedCount = activeLoadedCount;
+        final int finalActiveUnloadedCount = activeUnloadedCount;
+        final int finalDormantCount = dormantCount;
+        
+        source.sendFeedback(() -> Text.literal("§7Total Turtles: §f" + allTrackedUUIDs.size()), false);
+        source.sendFeedback(() -> Text.literal("§a  ACTIVE_LOADED: §f" + finalActiveLoadedCount + " §7(peripheral exists, chunk loaded)"), false);
+        source.sendFeedback(() -> Text.literal("§6  ACTIVE_UNLOADED: §f" + finalActiveUnloadedCount + " §7(peripheral exists, chunk unloaded)"), false);
+        source.sendFeedback(() -> Text.literal("§7  DORMANT: §f" + finalDormantCount + " §7(no peripheral, chunk unloaded)"), false);
+        
+        // Highlight garbage collection candidates
+        if (finalActiveUnloadedCount > 0) {
+            source.sendFeedback(() -> Text.literal(""), false);
+            source.sendFeedback(() -> Text.literal("§c⚠ " + finalActiveUnloadedCount + " turtles are candidates for garbage collection"), false);
+            source.sendFeedback(() -> Text.literal("§7(Active peripherals in unloaded chunks could be cleaned up)"), false);
+        }
+    }
+
     private static void showTrackingStats(ServerCommandSource source) {
         source.sendFeedback(() -> Text.literal("§6=== UUID Tracking Statistics ==="), false);
         
@@ -355,5 +428,37 @@ public class ChunkloaderCommand {
         
         int activeCount = ChunkLoaderRegistry.getAllPeripherals().size();
         source.sendFeedback(() -> Text.literal("§7Active Peripherals: §f" + activeCount), false);
+        
+        // Add load state breakdown
+        Set<UUID> allTrackedUUIDs = manager.getRestoredTurtleIds();
+        int activeLoadedCount = 0;
+        int activeUnloadedCount = 0;
+        int dormantCount = 0;
+        
+        for (UUID uuid : allTrackedUUIDs) {
+            boolean isActive = ChunkLoaderRegistry.isActive(uuid);
+            boolean isChunkLoaded = manager.isTurtleChunkLoaded(uuid);
+            
+            if (isActive) {
+                if (isChunkLoaded) {
+                    activeLoadedCount++;
+                } else {
+                    activeUnloadedCount++;
+                }
+            } else {
+                dormantCount++;
+            }
+        }
+        
+        // Capture variables as final for lambda expressions
+        final int finalActiveLoadedCount2 = activeLoadedCount;
+        final int finalActiveUnloadedCount2 = activeUnloadedCount;
+        final int finalDormantCount2 = dormantCount;
+        
+        source.sendFeedback(() -> Text.literal(""), false);
+        source.sendFeedback(() -> Text.literal("§6Load State Breakdown:"), false);
+        source.sendFeedback(() -> Text.literal("§a  Active + Loaded: §f" + finalActiveLoadedCount2), false);
+        source.sendFeedback(() -> Text.literal("§6  Active + Unloaded: §f" + finalActiveUnloadedCount2), false);
+        source.sendFeedback(() -> Text.literal("§7  Dormant: §f" + finalDormantCount2), false);
     }
 }

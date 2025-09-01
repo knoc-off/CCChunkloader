@@ -149,3 +149,4 @@ NBT → remoteManagementStates → bootstrap registry → peripheral creation �
 4. **Multiple Peripherals** - Support up to 2 chunkloaders per turtle
 5. **Graceful Timing** - Handle ServerComputer availability timing issues
 6. **Admin Transparency** - Comprehensive debug commands for troubleshooting
+7. **🚫 No Legacy Support** - Active development mod with no silent fallbacks or backward compatibility, clean slate on each version

@@ -1,0 +1,115 @@
+Current State: Working But Inefficient
+
+The radius override system now works reliably, but logs show several inefficiencies that should be
+optimized for better performance and cleaner operation.
+
+Optimization Phases
+
+Phase 1: Eliminate Double Peripheral Creation
+
+- Add peripheral existence checks before bootstrap attempts
+- Implement peripheral creation coordination to prevent race conditions
+- Add mutex/locking around peripheral creation process
+- Expected Result: Single peripheral creation per turtle activation
+
+Phase 2: Optimize State Management
+
+- Implement batched state saves instead of individual calls
+- Add "dirty" flag system to prevent unnecessary state saves
+- Reduce state save frequency during command processing chains
+- Expected Result: ~60% reduction in state save operations
+
+Phase 3: Bootstrap Timing Improvements
+
+- Add bootstrap cancellation when peripheral loads naturally
+- Improve bootstrap detection logic to avoid redundant attempts
+- Coordinate bootstrap process with natural peripheral creation
+- Expected Result: Eliminate "BOOTSTRAP PARTIAL" warnings
+
+Phase 4: Command Processing Optimization
+
+- Prevent duplicate command processing between bootstrap and natural loading
+- Add command processing coordination/locks
+- Optimize event firing to reduce redundant events
+- Expected Result: Single command processing per operation
+
+Phase 5: Logging and Performance
+
+- Reduce verbose logging for normal operations (keep for errors)
+- Add performance metrics and timing logs
+- Clean up redundant log messages
+- Expected Result: Cleaner logs, better performance visibility
+
+Files to Modify
+
+- TurtleStateEvents.java - Bootstrap coordination and event optimization
+- ChunkLoaderPeripheral.java - State save batching and peripheral creation locks
+- TurtleCommandQueue.java - Command processing coordination
+- ChunkManager.java - State management optimization
+
+Expected Outcomes
+
+- Performance: 40-60% reduction in redundant operations
+- Reliability: Eliminate race conditions and timing issues
+- Maintainability: Cleaner logs and better debugging
+- User Experience: Faster command execution, less log spam
+
+
+
+
+
+
+
+
+Implementation Plan
+
+Phase 1: Add Chunk Unload Detection
+
+- Implement chunk unload event listener in CCChunkloader.java
+- When turtle's chunk unloads → immediately call peripheral.cleanup() and remove from registry
+- This eliminates zombie peripherals at the source
+
+Phase 2: Modify Bootstrap Logic
+
+- Remove all peripheral existence checks from bootstrap (TurtleStateEvents.java)
+- Bootstrap always assumes turtle is fully dormant
+- Simplify onCommandQueued() to: dormant turtle → bootstrap, active turtle → process
+
+Phase 3: Remove Race Condition Handling
+
+- Delete attemptTurtleChunkBootstrap() method (no longer needed)
+- Remove isTurtleChunkLoaded() checks (if peripheral exists, chunk is loaded)
+- Simplify event processing logic significantly
+
+Phase 4: Clean Up State Management
+
+- Remove redundant peripheral creation coordination
+- Simplify ChunkLoaderPeripheral constructor (no race condition handling needed)
+- Remove duplicate state saves during peripheral creation
+
+Phase 5: Optimize Command Processing
+
+- Commands for dormant turtles → always bootstrap
+- Commands for active turtles → immediate processing
+- No more complex bootstrap coordination needed
+
+Expected Results
+
+- Eliminate all race conditions - if peripheral exists, turtle is definitely loaded
+- No memory leaks - peripherals only exist when turtles are actually loaded
+- Simpler code - remove ~200 lines of race condition handling
+- Cleaner logs - no more "BOOTSTRAP PARTIAL" or double creation messages
+- Better performance - no zombie peripherals consuming memory
+
+Files to Modify
+
+1. CCChunkloader.java - Add chunk unload event listener
+2. TurtleStateEvents.java - Simplify bootstrap logic, remove chunk loading checks
+3. ChunkLoaderPeripheral.java - Simplify constructor, remove race condition handling
+4. ChunkLoaderRegistry.java - Add bulk cleanup methods
+
+Key Insight
+
+"Active" peripheral = turtle is definitely loaded and available
+"No" peripheral = turtle is dormant and needs bootstrap
+This eliminates the problematic "active but unloaded" state entirely.

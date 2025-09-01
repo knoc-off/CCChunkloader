@@ -1,6 +1,13 @@
 package ccchunkloader.niko.ink;
 
-public class Config {
+/**
+ * Configuration constants for CC Chunk Loader mod.
+ * These values control chunk loading limits and fuel consumption rates.
+ */
+public final class Config {
+    // Prevent instantiation
+    private Config() {}
+    
     // General Settings
     public static double MAX_RADIUS = 2.5;
     public static double MAX_RANDOM_TICK_RADIUS = 1.4;
