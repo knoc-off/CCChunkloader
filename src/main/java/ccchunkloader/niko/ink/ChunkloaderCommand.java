@@ -15,6 +15,25 @@ public class ChunkloaderCommand {
     public static void register(CommandDispatcher<ServerCommandSource> dispatcher) {
         LiteralArgumentBuilder<ServerCommandSource> builder = literal("ccchunkloader")
             .requires(source -> source.hasPermissionLevel(2))
+            .executes(ctx -> {
+                // Default command shows help
+                showMainHelp(ctx.getSource());
+                return 1;
+            })
+            .then(literal("help")
+                .executes(ctx -> {
+                    showMainHelp(ctx.getSource());
+                    return 1;
+                })
+                .then(argument("command", StringArgumentType.word()).executes(ctx -> {
+                    String command = StringArgumentType.getString(ctx, "command");
+                    showDetailedHelp(ctx.getSource(), command);
+                    return 1;
+                })))
+            .then(literal("list").executes(ctx -> {
+                showAllConfigValues(ctx.getSource());
+                return 1;
+            }))
             .then(literal("get").then(argument("key", StringArgumentType.word()).executes(ctx -> {
                 String key = StringArgumentType.getString(ctx, "key");
                 switch (key) {
@@ -84,5 +103,64 @@ public class ChunkloaderCommand {
                     }
                 }))));
         dispatcher.register(builder);
+    }
+
+    private static void showMainHelp(ServerCommandSource source) {
+        source.sendFeedback(() -> Text.literal("§6=== CC Chunk Loader Commands ==="), false);
+        source.sendFeedback(() -> Text.literal("§e/ccchunkloader help §7- Show this help"), false);
+        source.sendFeedback(() -> Text.literal("§e/ccchunkloader help <command> §7- Detailed help for a command"), false);
+        source.sendFeedback(() -> Text.literal("§e/ccchunkloader list §7- Show all config values"), false);
+        source.sendFeedback(() -> Text.literal("§e/ccchunkloader get <key> §7- Get a config value"), false);
+        source.sendFeedback(() -> Text.literal("§e/ccchunkloader set <key> <value> §7- Set a config value"), false);
+        source.sendFeedback(() -> Text.literal("§7Use §e/ccchunkloader help <command> §7for detailed info"), false);
+    }
+
+    private static void showDetailedHelp(ServerCommandSource source, String command) {
+        switch (command.toLowerCase()) {
+            case "get":
+                source.sendFeedback(() -> Text.literal("§6=== /ccchunkloader get ==="), false);
+                source.sendFeedback(() -> Text.literal("§7Get the current value of a config setting"), false);
+                source.sendFeedback(() -> Text.literal("§eUsage: §f/ccchunkloader get <key>"), false);
+                source.sendFeedback(() -> Text.literal("§7Example: §f/ccchunkloader get MAX_RADIUS"), false);
+                source.sendFeedback(() -> Text.literal("§7Use §e/ccchunkloader list §7to see all available keys"), false);
+                break;
+            case "set":
+                source.sendFeedback(() -> Text.literal("§6=== /ccchunkloader set ==="), false);
+                source.sendFeedback(() -> Text.literal("§7Set a config value (requires OP level 2)"), false);
+                source.sendFeedback(() -> Text.literal("§eUsage: §f/ccchunkloader set <key> <value>"), false);
+                source.sendFeedback(() -> Text.literal("§7Examples:"), false);
+                source.sendFeedback(() -> Text.literal("§f  /ccchunkloader set MAX_RADIUS 3.0"), false);
+                source.sendFeedback(() -> Text.literal("§f  /ccchunkloader set BASE_FUEL_COST_PER_CHUNK 0.05"), false);
+                source.sendFeedback(() -> Text.literal("§c⚠ Warning: Some settings affect all turtles immediately!"), false);
+                break;
+            case "list":
+                source.sendFeedback(() -> Text.literal("§6=== /ccchunkloader list ==="), false);
+                source.sendFeedback(() -> Text.literal("§7Shows all config keys and their current values"), false);
+                source.sendFeedback(() -> Text.literal("§eUsage: §f/ccchunkloader list"), false);
+                break;
+            default:
+                source.sendFeedback(() -> Text.literal("§cUnknown command: " + command), false);
+                source.sendFeedback(() -> Text.literal("§7Available commands: §eget, set, list, help"), false);
+                break;
+        }
+    }
+
+    private static void showAllConfigValues(ServerCommandSource source) {
+        source.sendFeedback(() -> Text.literal("§6=== CC Chunk Loader Configuration ==="), false);
+        source.sendFeedback(() -> Text.literal("§7General Settings:"), false);
+        source.sendFeedback(() -> Text.literal("§e  MAX_RADIUS: §f" + Config.MAX_RADIUS + " §7(max chunk loading radius)"), false);
+        source.sendFeedback(() -> Text.literal("§e  MAX_RANDOM_TICK_RADIUS: §f" + Config.MAX_RANDOM_TICK_RADIUS + " §7(max random tick radius)"), false);
+        
+        source.sendFeedback(() -> Text.literal("§7Fuel Cost Settings:"), false);
+        source.sendFeedback(() -> Text.literal("§e  BASE_FUEL_COST_PER_CHUNK: §f" + Config.BASE_FUEL_COST_PER_CHUNK + " §7(fuel per chunk per tick)"), false);
+        source.sendFeedback(() -> Text.literal("§e  DISTANCE_MULTIPLIER: §f" + Config.DISTANCE_MULTIPLIER + " §7(distance cost multiplier)"), false);
+        source.sendFeedback(() -> Text.literal("§e  RANDOM_TICK_FUEL_MULTIPLIER: §f" + Config.RANDOM_TICK_FUEL_MULTIPLIER + " §7(random tick cost multiplier)"), false);
+        
+        source.sendFeedback(() -> Text.literal("§7Cleanup Settings §c(DANGEROUS):"), false);
+        source.sendFeedback(() -> Text.literal("§e  ENABLE_TIME_BASED_CLEANUP: §f" + Config.ENABLE_TIME_BASED_CLEANUP + " §c(destroys turtle data!)"), false);
+        source.sendFeedback(() -> Text.literal("§e  CLEANUP_INTERVAL_TICKS: §f" + Config.CLEANUP_INTERVAL_TICKS + " §7(cleanup check interval)"), false);
+        source.sendFeedback(() -> Text.literal("§e  MAX_INACTIVE_TIME_MS: §f" + Config.MAX_INACTIVE_TIME_MS + " §7(max inactive time)"), false);
+        
+        source.sendFeedback(() -> Text.literal("§7Use §e/ccchunkloader set <key> <value> §7to change values"), false);
     }
 }
