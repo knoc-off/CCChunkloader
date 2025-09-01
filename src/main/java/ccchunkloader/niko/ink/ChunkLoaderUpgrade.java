@@ -36,18 +36,9 @@ public class ChunkLoaderUpgrade extends AbstractTurtleUpgrade {
         
         ChunkLoaderPeripheral peripheral = new ChunkLoaderPeripheral(turtle, side);
 
-        // Check if this turtle should bootstrap its chunk loading from saved state
-        ChunkLoaderRegistry.BootstrapData bootstrapData = ChunkLoaderRegistry.getBootstrapData(turtleId);
-
-        if (bootstrapData != null && bootstrapData.wakeOnWorldLoad && turtle.getFuelLevel() >= bootstrapData.lastKnownFuelLevel) {
-            LOGGER.info("Bootstrapping turtle {} chunk loading on wakeup", turtleId);
-
-            // Clear bootstrap data since turtle is now active
-            ChunkLoaderRegistry.clearBootstrapData(turtleId);
-
-            // The peripheral will automatically restore its state from upgrade NBT when created
-            // If it had chunk loading enabled, it will resume on the next update tick
-        }
+        // Bootstrap functionality is now handled directly by the peripheral from upgrade NBT
+        // No need to check bootstrap registry since ChunkManager handles state persistence
+        LOGGER.debug("Peripheral created for turtle {} - will restore from upgrade NBT", turtleId);
 
         return peripheral;
     }

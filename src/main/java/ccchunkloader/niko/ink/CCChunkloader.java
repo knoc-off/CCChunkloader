@@ -175,15 +175,8 @@ public class CCChunkloader implements ModInitializer {
 				continue;
 			}
 
-			// Update bootstrap data for this turtle
+			// Bootstrap data is now handled directly in ChunkManager
 			if (savedState.lastChunkPos != null) {
-				ChunkLoaderRegistry.updateBootstrapData(
-					turtleId,
-					world.getRegistryKey(),
-					savedState.lastChunkPos,
-					savedState.fuelLevel,
-					savedState.wakeOnWorldLoad
-				);
 
 				if (savedState.wakeOnWorldLoad) {
 					wokenCount++;

@@ -15,16 +15,22 @@ The CC Chunk Loader mod provides persistent chunk loading capabilities for Compu
 - Persist turtle state across world saves/loads
 - Handle UUID lifecycle based on computer ID mappings
 
-**State Tracking Maps:**
+**State Tracking (OPTIMIZED):**
 - `chunkLoaders: Map<ChunkPos, Set<UUID>>` - Which turtles are loading each chunk
 - `turtleChunks: Map<UUID, Set<ChunkPos>>` - Which chunks each turtle is loading
-- `turtleStateCache: Map<UUID, SavedState>` - Runtime cache of turtle states
-- `restoredTurtleStates: Map<UUID, SavedState>` - Bootstrap states from NBT
-- `persistentPositions: Map<UUID, ChunkPos>` - Source of truth for positions
-- `persistentFuelLevels: Map<UUID, Integer>` - Source of truth for fuel levels
-- `radiusOverrides: Map<UUID, Double>` - Temporary radius settings for dormant turtles
-- `computerIdToUUIDs: Map<Integer, Set<UUID>>` - Computer → UUIDs mapping
-- `uuidToComputerId: Map<UUID, Integer>` - UUID → Computer reverse mapping
+- `remoteManagementStates: Map<UUID, RemoteManagementState>` - **UNIFIED** remote management state for offline turtles (position, fuel, wake preference, computer ID, radius override)
+- `computerTracker: ComputerUUIDTracker` - **ATOMIC** bidirectional computer ID ↔ UUID mapping
+
+**Optimization Results:**
+- **Reduced from 9 maps to 4 core structures** (~55% reduction)
+- **Eliminated bootstrap registry redundancy**: ChunkLoaderRegistry.BOOTSTRAP_DATA removed, bootstrap logic queries ChunkManager directly
+- **Consolidated bidirectional mappings**: `computerIdToUUIDs` + `uuidToComputerId` replaced with atomic `ComputerUUIDTracker` 
+- **Integrated radius overrides**: No separate `radiusOverrides` map, now part of `RemoteManagementState`
+- **Single source of truth**: All turtle state (active + dormant + overrides) managed in unified structures
+
+**State Design Principles:**
+- **Turtle's own NBT data**: Complete peripheral state (radius, fuelDebt, randomTickEnabled) restored when peripheral loads
+- **Remote management data**: Essential state (position, fuel, wake preference, computer ID, radius override) for managing offline turtles
 
 ### **2. ChunkLoaderPeripheral** (`ChunkLoaderPeripheral.java`)
 **Purpose:** Individual turtle peripheral implementation
@@ -51,13 +57,13 @@ The CC Chunk Loader mod provides persistent chunk loading capabilities for Compu
 - Clean up orphaned UUIDs when peripherals are unequipped
 - Validate computer equipment on peripheral creation
 
-### **4. ChunkLoaderRegistry** (`ChunkLoaderRegistry.java`)
-**Purpose:** Global peripheral tracking and bootstrap coordination
+### **4. ChunkLoaderRegistry** (`ChunkLoaderRegistry.java`) - **SIMPLIFIED**
+**Purpose:** Lightweight active peripheral tracking (stateless for bootstrap)
 
 **Key Responsibilities:**
-- Track active peripheral instances by UUID
-- Coordinate turtle bootstrap during world load
+- Track active peripheral instances by UUID (for method dispatch only)
 - Provide diagnostic information for troubleshooting
+- Bootstrap coordination moved to ChunkManager for single source of truth
 
 ### **5. Computer ID Tracking System**
 **Purpose:** UUID lifecycle management based on turtle computer IDs
@@ -106,7 +112,7 @@ Handle dormant turtles that need to be reactivated when world loads or chunks lo
 
 ### **Data Flow**
 ```
-NBT → restoredTurtleStates → bootstrap registry → peripheral creation → active operation
+NBT → remoteManagementStates → bootstrap registry → peripheral creation → active operation
 ```
 
 ## **Fuel System**

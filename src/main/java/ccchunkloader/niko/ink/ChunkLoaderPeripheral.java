@@ -76,8 +76,7 @@ public class ChunkLoaderPeripheral implements IPeripheral {
             // CRITICAL: Save initial state to cache immediately to ensure position/fuel data is available
             saveStateToUpgradeNBT();
 
-            // Clear bootstrap data since turtle is now active
-            ChunkLoaderRegistry.clearBootstrapData(turtleId);
+            // Turtle is now active - no need to clear bootstrap data since we don't use registry anymore
 
             // If turtle was restored with radius > 0, immediately resume chunk loading
             if (radius > 0.0) {
@@ -570,9 +569,6 @@ public class ChunkLoaderPeripheral implements IPeripheral {
 
         turtle.updateUpgradeNBTData(side);
 
-        // Update bootstrap data in registry
-        updateBootstrapData();
-        
         // Update ChunkManager cache for persistence of dormant turtles
         updateChunkManagerCache();
 
@@ -580,20 +576,6 @@ public class ChunkLoaderPeripheral implements IPeripheral {
                     radius, fuelDebt, wakeOnWorldLoad, randomTickEnabled, lastChunkPos);
     }
 
-    /**
-     * Update bootstrap data in the registry
-     */
-    private void updateBootstrapData() {
-        if (turtle.getLevel() instanceof ServerWorld serverWorld && lastChunkPos != null) {
-            ChunkLoaderRegistry.updateBootstrapData(
-                turtleId,
-                serverWorld.getRegistryKey(),
-                lastChunkPos,
-                turtle.getFuelLevel(),
-                wakeOnWorldLoad
-            );
-        }
-    }
     
     /**
      * Update ChunkManager cache with current state for persistence

@@ -14,6 +14,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import net.minecraft.registry.RegistryKey;
+import net.minecraft.world.World;
 
 /**
  * Manages chunk loading with reference counting to handle multiple turtles
@@ -27,18 +29,12 @@ public class ChunkManager {
     private final Map<ChunkPos, Set<UUID>> chunkLoaders = new ConcurrentHashMap<>();
     // Map from turtle UUID to set of chunks they're currently loading
     private final Map<UUID, Set<ChunkPos>> turtleChunks = new ConcurrentHashMap<>();
-    // Cache of turtle states for persistence (survives peripheral cleanup)
-    private final Map<UUID, ChunkLoaderPeripheral.SavedState> turtleStateCache = new ConcurrentHashMap<>();
-    // Persistent position tracking (source of truth for turtle positions)
-    private final Map<UUID, ChunkPos> persistentPositions = new ConcurrentHashMap<>();
-    // Persistent fuel tracking (source of truth for turtle fuel levels)
-    private final Map<UUID, Integer> persistentFuelLevels = new ConcurrentHashMap<>();
-    // Radius overrides for turtles (applied when peripheral is created, cleared after use)
-    private final Map<UUID, Double> radiusOverrides = new ConcurrentHashMap<>();
-    // Computer ID to UUIDs mapping (for lifecycle management)
-    private final Map<Integer, Set<UUID>> computerIdToUUIDs = new ConcurrentHashMap<>();
-    // UUID to Computer ID reverse mapping
-    private final Map<UUID, Integer> uuidToComputerId = new ConcurrentHashMap<>();
+    // Unified remote management state for offline turtles (position, fuel, wake preference, computer ID)
+    private final Map<UUID, RemoteManagementState> remoteManagementStates = new ConcurrentHashMap<>();
+    // Bootstrap states from NBT (temporary during world load)
+    private final Map<UUID, ChunkLoaderPeripheral.SavedState> restoredTurtleStates = new ConcurrentHashMap<>();
+    // Unified computer ID to UUID tracking (replaces separate bidirectional maps)
+    private final ComputerUUIDTracker computerTracker = new ComputerUUIDTracker();
 
     private final ServerWorld world;
     private boolean bootstrapped = false;
@@ -74,8 +70,8 @@ public class ChunkManager {
     private void forceBootstrapTurtles() {
         LOGGER.info("Force-bootstrapping turtles for world {}", world.getRegistryKey().getValue());
 
-        Map<UUID, ChunkLoaderRegistry.BootstrapData> turtlesToBootstrap =
-            ChunkLoaderRegistry.getTurtlesToBootstrap(world.getRegistryKey());
+        Map<UUID, BootstrapData> turtlesToBootstrap =
+            getTurtlesToBootstrap(world.getRegistryKey());
 
         LOGGER.info("Found {} turtles in bootstrap registry for force-bootstrap in world {}",
                    turtlesToBootstrap.size(), world.getRegistryKey().getValue());
@@ -85,9 +81,9 @@ public class ChunkManager {
             return;
         }
 
-        for (Map.Entry<UUID, ChunkLoaderRegistry.BootstrapData> entry : turtlesToBootstrap.entrySet()) {
+        for (Map.Entry<UUID, BootstrapData> entry : turtlesToBootstrap.entrySet()) {
             UUID turtleId = entry.getKey();
-            ChunkLoaderRegistry.BootstrapData data = entry.getValue();
+            BootstrapData data = entry.getValue();
 
             LOGGER.info("Force-processing bootstrap data for turtle {}: chunk={}, fuel={}, wake={}",
                        turtleId, data.chunkPos, data.lastKnownFuelLevel, data.wakeOnWorldLoad);
@@ -115,8 +111,8 @@ public class ChunkManager {
         bootstrapped = true;
         LOGGER.info("Starting bootstrap process for world {}", world.getRegistryKey().getValue());
 
-        Map<UUID, ChunkLoaderRegistry.BootstrapData> turtlesToBootstrap =
-            ChunkLoaderRegistry.getTurtlesToBootstrap(world.getRegistryKey());
+        Map<UUID, BootstrapData> turtlesToBootstrap =
+            getTurtlesToBootstrap(world.getRegistryKey());
 
         LOGGER.info("Found {} turtles in bootstrap registry for world {}",
                    turtlesToBootstrap.size(), world.getRegistryKey().getValue());
@@ -129,9 +125,9 @@ public class ChunkManager {
         LOGGER.info("Bootstrapping {} turtles with wake-on-world-load enabled for world {}",
                    turtlesToBootstrap.size(), world.getRegistryKey().getValue());
 
-        for (Map.Entry<UUID, ChunkLoaderRegistry.BootstrapData> entry : turtlesToBootstrap.entrySet()) {
+        for (Map.Entry<UUID, BootstrapData> entry : turtlesToBootstrap.entrySet()) {
             UUID turtleId = entry.getKey();
-            ChunkLoaderRegistry.BootstrapData data = entry.getValue();
+            BootstrapData data = entry.getValue();
 
             LOGGER.info("Processing bootstrap data for turtle {}: chunk={}, fuel={}, wake={}",
                        turtleId, data.chunkPos, data.lastKnownFuelLevel, data.wakeOnWorldLoad);
@@ -317,34 +313,58 @@ public class ChunkManager {
     }
     
     /**
-     * Update persistent position tracking for a turtle (source of truth)
+     * Update remote management state for a turtle (for offline management)
      */
-    public void updateTurtlePosition(UUID turtleId, ChunkPos position) {
-        persistentPositions.put(turtleId, position);
-        touch(turtleId); // Also update last activity
-        LOGGER.debug("Updated persistent position for turtle {}: {}", turtleId, position);
+    public void updateRemoteManagementState(UUID turtleId, ChunkPos position, int fuelLevel, boolean wakeOnWorldLoad, Integer computerId) {
+        // Preserve existing radius override if any
+        RemoteManagementState current = remoteManagementStates.get(turtleId);
+        Double existingOverride = current != null ? current.radiusOverride : null;
+        
+        RemoteManagementState newState = new RemoteManagementState(position, fuelLevel, wakeOnWorldLoad, computerId, existingOverride);
+        remoteManagementStates.put(turtleId, newState);
+        touch(turtleId); // Ensure turtle is tracked
+        LOGGER.debug("Updated remote management state for turtle {}: pos={}, fuel={}, wake={}, computerId={}, override={}", 
+                    turtleId, position, fuelLevel, wakeOnWorldLoad, computerId, existingOverride);
     }
     
     /**
-     * Update persistent fuel tracking for a turtle (source of truth)
+     * Update position only (convenience method)
+     */
+    public void updateTurtlePosition(UUID turtleId, ChunkPos position) {
+        RemoteManagementState current = remoteManagementStates.get(turtleId);
+        if (current != null) {
+            updateRemoteManagementState(turtleId, position, current.lastKnownFuel, current.wakeOnWorldLoad, current.computerId);
+        } else {
+            updateRemoteManagementState(turtleId, position, 1, false, null);
+        }
+    }
+    
+    /**
+     * Update fuel only (convenience method)
      */
     public void updateTurtleFuel(UUID turtleId, int fuelLevel) {
-        persistentFuelLevels.put(turtleId, fuelLevel);
-        LOGGER.debug("Updated persistent fuel for turtle {}: {}", turtleId, fuelLevel);
+        RemoteManagementState current = remoteManagementStates.get(turtleId);
+        if (current != null) {
+            updateRemoteManagementState(turtleId, current.lastKnownPosition, fuelLevel, current.wakeOnWorldLoad, current.computerId);
+        } else {
+            updateRemoteManagementState(turtleId, null, fuelLevel, false, null);
+        }
     }
     
     /**
      * Get persistent position for a turtle (always available)
      */
     public ChunkPos getPersistentPosition(UUID turtleId) {
-        return persistentPositions.get(turtleId);
+        RemoteManagementState state = remoteManagementStates.get(turtleId);
+        return state != null ? state.lastKnownPosition : null;
     }
     
     /**
      * Get persistent fuel level for a turtle (always available)
      */
     public Integer getPersistentFuelLevel(UUID turtleId) {
-        return persistentFuelLevels.get(turtleId);
+        RemoteManagementState state = remoteManagementStates.get(turtleId);
+        return state != null ? state.lastKnownFuel : null;
     }
     
     /**
@@ -352,7 +372,17 @@ public class ChunkManager {
      * This will be applied when the turtle's peripheral is created and then cleared
      */
     public void setRadiusOverride(UUID turtleId, double radius) {
-        radiusOverrides.put(turtleId, radius);
+        RemoteManagementState current = remoteManagementStates.get(turtleId);
+        if (current != null) {
+            RemoteManagementState updated = new RemoteManagementState(
+                current.lastKnownPosition, current.lastKnownFuel, current.wakeOnWorldLoad, current.computerId, radius
+            );
+            remoteManagementStates.put(turtleId, updated);
+        } else {
+            // Create new state with just override
+            RemoteManagementState newState = new RemoteManagementState(null, 1, false, null, radius);
+            remoteManagementStates.put(turtleId, newState);
+        }
         LOGGER.info("Set radius override for turtle {}: {}", turtleId, radius);
         // Save to world immediately to persist across chunk loads
         markDirty();
@@ -363,19 +393,27 @@ public class ChunkManager {
      * Returns null if no override exists
      */
     public Double getAndClearRadiusOverride(UUID turtleId) {
-        Double override = radiusOverrides.remove(turtleId);
-        if (override != null) {
+        RemoteManagementState current = remoteManagementStates.get(turtleId);
+        if (current != null && current.radiusOverride != null) {
+            Double override = current.radiusOverride;
+            // Clear the override by updating state
+            RemoteManagementState updated = new RemoteManagementState(
+                current.lastKnownPosition, current.lastKnownFuel, current.wakeOnWorldLoad, current.computerId, null
+            );
+            remoteManagementStates.put(turtleId, updated);
             LOGGER.info("Retrieved and cleared radius override for turtle {}: {}", turtleId, override);
             markDirty();
+            return override;
         }
-        return override;
+        return null;
     }
     
     /**
      * Check if a turtle has a radius override pending
      */
     public boolean hasRadiusOverride(UUID turtleId) {
-        return radiusOverrides.containsKey(turtleId);
+        RemoteManagementState state = remoteManagementStates.get(turtleId);
+        return state != null && state.radiusOverride != null;
     }
     
     /**
@@ -392,12 +430,18 @@ public class ChunkManager {
      */
     public synchronized void updateTurtleStateCache(UUID turtleId, ChunkLoaderPeripheral.SavedState state) {
         if (state != null) {
-            turtleStateCache.put(turtleId, state);
-            LOGGER.debug("Updated turtle state cache for turtle {}: radius={}, fuel={}, wake={}",
-                        turtleId, state.radius, state.fuelLevel, state.wakeOnWorldLoad);
+            // Update unified remote management state from turtle's own state
+            RemoteManagementState current = remoteManagementStates.get(turtleId);
+            Integer computerId = current != null ? current.computerId : null;
+            
+            RemoteManagementState newState = RemoteManagementState.fromSavedState(state, computerId);
+            remoteManagementStates.put(turtleId, newState);
+            
+            LOGGER.debug("Updated remote management state from turtle cache {}: pos={}, fuel={}, wake={}, computerId={}",
+                        turtleId, state.lastChunkPos, state.fuelLevel, state.wakeOnWorldLoad, computerId);
         } else {
-            turtleStateCache.remove(turtleId);
-            LOGGER.debug("Removed turtle {} from state cache", turtleId);
+            remoteManagementStates.remove(turtleId);
+            LOGGER.debug("Removed turtle {} from remote management state", turtleId);
         }
     }
 
@@ -405,14 +449,15 @@ public class ChunkManager {
      * Get cached turtle state (may be dormant turtle)
      */
     public synchronized ChunkLoaderPeripheral.SavedState getCachedTurtleState(UUID turtleId) {
-        return turtleStateCache.get(turtleId);
+        RemoteManagementState state = remoteManagementStates.get(turtleId);
+        return state != null ? state.toSavedState() : null;
     }
 
     /**
      * Remove turtle from state cache (called when turtle is completely removed)
      */
     public synchronized void removeTurtleFromCache(UUID turtleId) {
-        turtleStateCache.remove(turtleId);
+        remoteManagementStates.remove(turtleId);
         LOGGER.debug("Removed turtle {} from state cache", turtleId);
     }
 
@@ -462,8 +507,6 @@ public class ChunkManager {
         return Set.copyOf(turtleChunks.keySet());
     }
 
-    // Map to store complete restored turtle states for registry population
-    private final Map<UUID, ChunkLoaderPeripheral.SavedState> restoredTurtleStates = new ConcurrentHashMap<>();
 
     /**
      * Get the complete restored state for a turtle UUID
@@ -535,7 +578,7 @@ public class ChunkManager {
             for (UUID turtleId : turtleChunks.keySet()) {
                 turtleChunks.put(turtleId, ConcurrentHashMap.newKeySet());
             }
-            // DON'T clear turtleStateCache, persistentPositions, or persistentFuelLevels - preserve turtle data
+            // DON'T clear remoteManagementStates - preserve turtle data
         }
 
         // PHASE 2: Unforce chunks WITHOUT holding locks (can block safely)
@@ -569,22 +612,12 @@ public class ChunkManager {
         synchronized (this) {
             // Now actually remove from tracking maps
             turtleChunks.remove(turtleId);
-            turtleStateCache.remove(turtleId);
-            restoredTurtleStates.remove(turtleId);
-            persistentPositions.remove(turtleId);
-            persistentFuelLevels.remove(turtleId);
-            radiusOverrides.remove(turtleId);
+            remoteManagementStates.remove(turtleId);
             
             // Remove from computer ID tracking
-            Integer computerId = uuidToComputerId.remove(turtleId);
+            Integer computerId = computerTracker.getComputerForUUID(turtleId);
             if (computerId != null) {
-                Set<UUID> computerUUIDs = computerIdToUUIDs.get(computerId);
-                if (computerUUIDs != null) {
-                    computerUUIDs.remove(turtleId);
-                    if (computerUUIDs.isEmpty()) {
-                        computerIdToUUIDs.remove(computerId);
-                    }
-                }
+                computerTracker.remove(turtleId);
                 LOGGER.debug("Removed UUID {} from computer ID {} tracking", turtleId, computerId);
             }
         }
@@ -600,6 +633,29 @@ public class ChunkManager {
         if (manager != null) {
             manager.permanentlyRemoveTurtle(turtleId);
         }
+    }
+
+    /**
+     * Get all turtles that should be bootstrapped for this world
+     * Replaces ChunkLoaderRegistry.getTurtlesToBootstrap()
+     */
+    public synchronized Map<UUID, BootstrapData> getTurtlesToBootstrap(RegistryKey<World> worldKey) {
+        Map<UUID, BootstrapData> toBootstrap = new HashMap<>();
+        
+        for (Map.Entry<UUID, RemoteManagementState> entry : remoteManagementStates.entrySet()) {
+            UUID turtleId = entry.getKey();
+            RemoteManagementState state = entry.getValue();
+            
+            // Only include turtles that should wake on world load and have fuel
+            if (state.wakeOnWorldLoad && state.lastKnownFuel > 0 && state.lastKnownPosition != null) {
+                BootstrapData bootstrapData = new BootstrapData(
+                    worldKey, state.lastKnownPosition, state.lastKnownFuel, state.wakeOnWorldLoad
+                );
+                toBootstrap.put(turtleId, bootstrapData);
+            }
+        }
+        
+        return toBootstrap;
     }
 
     /**
@@ -631,11 +687,12 @@ public class ChunkManager {
             boolean wakeOnWorldLoad = false;
             boolean isActive = false;
             
-            // PRIMARY SOURCE: Use persistent tracking data as source of truth
-            lastPosition = persistentPositions.get(turtleId);
-            Integer persistentFuel = persistentFuelLevels.get(turtleId);
-            if (persistentFuel != null) {
-                fuelLevel = persistentFuel;
+            // PRIMARY SOURCE: Use remote management state as source of truth
+            RemoteManagementState remoteState = remoteManagementStates.get(turtleId);
+            if (remoteState != null) {
+                lastPosition = remoteState.lastKnownPosition;
+                fuelLevel = remoteState.lastKnownFuel;
+                wakeOnWorldLoad = remoteState.wakeOnWorldLoad;
             }
             
             // Get wake preference from active peripheral or cache
@@ -645,23 +702,23 @@ public class ChunkManager {
                 if (state != null) {
                     wakeOnWorldLoad = state.wakeOnWorldLoad;
                     isActive = true;
-                    // Update cache with latest state from active peripheral
-                    turtleStateCache.put(turtleId, state);
+                    // Update remote management state from active peripheral
+                    Integer computerId = remoteState != null ? remoteState.computerId : computerTracker.getComputerForUUID(turtleId);
+                    updateRemoteManagementState(turtleId, state.lastChunkPos, state.fuelLevel, state.wakeOnWorldLoad, computerId);
                     
-                    // Update persistent data from active peripheral if available
+                    // Update local variables for serialization
                     if (state.lastChunkPos != null) {
                         lastPosition = state.lastChunkPos;
-                        persistentPositions.put(turtleId, state.lastChunkPos);
                     }
                     fuelLevel = state.fuelLevel;
-                    persistentFuelLevels.put(turtleId, state.fuelLevel);
+                    wakeOnWorldLoad = state.wakeOnWorldLoad;
                 }
             } else {
-                // Fallback to cached state for wake preference only
-                ChunkLoaderPeripheral.SavedState cachedState = turtleStateCache.get(turtleId);
-                if (cachedState != null) {
-                    wakeOnWorldLoad = cachedState.wakeOnWorldLoad;
-                    LOGGER.debug("Using cached wake preference for dormant turtle {}", turtleId);
+                // Data already loaded from remoteState above
+                if (remoteState != null) {
+                    LOGGER.debug("Using remote management state for dormant turtle {}", turtleId);
+                } else {
+                    LOGGER.debug("No state data available for dormant turtle {}", turtleId);
                 }
             }
             
@@ -685,7 +742,7 @@ public class ChunkManager {
             stateData.putBoolean("wakeOnWorldLoad", wakeOnWorldLoad);
             
             // CRITICAL: Save computer ID for UUID lifecycle management
-            Integer computerId = uuidToComputerId.get(turtleId);
+            Integer computerId = computerTracker.getComputerForUUID(turtleId);
             if (computerId != null) {
                 stateData.putInt("computerId", computerId);
             }
@@ -697,19 +754,171 @@ public class ChunkManager {
 
         nbt.put("turtleStates", turtleStates);
         
-        // Serialize radius overrides
-        if (!radiusOverrides.isEmpty()) {
-            NbtCompound radiusOverridesNbt = new NbtCompound();
-            for (Map.Entry<UUID, Double> entry : radiusOverrides.entrySet()) {
-                radiusOverridesNbt.putDouble(entry.getKey().toString(), entry.getValue());
-            }
-            nbt.put("radiusOverrides", radiusOverridesNbt);
-            LOGGER.info("Serialized {} radius overrides to NBT", radiusOverrides.size());
-        }
+        // Radius overrides are now part of remoteManagementStates - no separate serialization needed
         
         LOGGER.info("Serialized {} turtle bootstrap records to NBT ({} tracked turtles)", 
                    turtleStates.size(), turtleChunks.size());
         return nbt;
+    }
+
+    /**
+     * Bidirectional computer ID to UUID mapping tracker
+     * Consolidates computerIdToUUIDs + uuidToComputerId into atomic operations
+     */
+    public static class ComputerUUIDTracker {
+        private final Map<Integer, Set<UUID>> computerToUUIDs = new ConcurrentHashMap<>();
+        private final Map<UUID, Integer> uuidToComputer = new ConcurrentHashMap<>();
+        
+        /**
+         * Register UUID for computer ID atomically
+         */
+        public synchronized void register(int computerId, UUID uuid) {
+            computerToUUIDs.computeIfAbsent(computerId, k -> ConcurrentHashMap.newKeySet()).add(uuid);
+            uuidToComputer.put(uuid, computerId);
+        }
+        
+        /**
+         * Remove UUID atomically from both mappings
+         */
+        public synchronized void remove(UUID uuid) {
+            Integer computerId = uuidToComputer.remove(uuid);
+            if (computerId != null) {
+                Set<UUID> computerUUIDs = computerToUUIDs.get(computerId);
+                if (computerUUIDs != null) {
+                    computerUUIDs.remove(uuid);
+                    if (computerUUIDs.isEmpty()) {
+                        computerToUUIDs.remove(computerId);
+                    }
+                }
+            }
+        }
+        
+        /**
+         * Get all UUIDs for a computer ID
+         */
+        public Set<UUID> getUUIDsForComputer(int computerId) {
+            return Set.copyOf(computerToUUIDs.getOrDefault(computerId, Set.of()));
+        }
+        
+        /**
+         * Get computer ID for a UUID
+         */
+        public Integer getComputerForUUID(UUID uuid) {
+            return uuidToComputer.get(uuid);
+        }
+        
+        /**
+         * Get all computer IDs
+         */
+        public Set<Integer> getAllComputerIds() {
+            return Set.copyOf(computerToUUIDs.keySet());
+        }
+        
+        /**
+         * Validate UUIDs for a computer - remove any that aren't in the given set
+         */
+        public synchronized Set<UUID> validateAndCleanup(int computerId, Set<UUID> currentlyEquippedUUIDs) {
+            Set<UUID> storedUUIDs = computerToUUIDs.get(computerId);
+            if (storedUUIDs == null) return Set.of();
+
+            Set<UUID> toRemove = new HashSet<>(storedUUIDs);
+            toRemove.removeAll(currentlyEquippedUUIDs);
+            
+            for (UUID orphanedUUID : toRemove) {
+                remove(orphanedUUID);
+            }
+            
+            return toRemove;
+        }
+        
+        /**
+         * Get statistics
+         */
+        public synchronized Map<String, Object> getStats() {
+            Map<String, Object> stats = new HashMap<>();
+            stats.put("totalComputers", computerToUUIDs.size());
+            stats.put("totalUUIDs", uuidToComputer.size());
+            stats.put("orphanedUUIDs", uuidToComputer.size() - computerToUUIDs.values().stream().mapToInt(Set::size).sum());
+            return stats;
+        }
+        
+        /**
+         * Clear all mappings
+         */
+        public synchronized void clear() {
+            computerToUUIDs.clear();
+            uuidToComputer.clear();
+        }
+    }
+
+    /**
+     * Minimal data needed to bootstrap a turtle on world load
+     * Moved from ChunkLoaderRegistry to eliminate redundancy
+     */
+    public static class BootstrapData {
+        public final RegistryKey<World> worldKey;
+        public final ChunkPos chunkPos;
+        public final int lastKnownFuelLevel;
+        public final boolean wakeOnWorldLoad;
+
+        public BootstrapData(RegistryKey<World> worldKey, ChunkPos chunkPos, int fuelLevel, boolean wakeOnWorldLoad) {
+            this.worldKey = worldKey;
+            this.chunkPos = chunkPos;
+            this.lastKnownFuelLevel = fuelLevel;
+            this.wakeOnWorldLoad = wakeOnWorldLoad;
+        }
+    }
+
+    /**
+     * Unified state for remote management of offline turtles
+     * Contains essential data needed when turtle is not loaded
+     */
+    public static class RemoteManagementState {
+        public final ChunkPos lastKnownPosition;
+        public final int lastKnownFuel;
+        public final boolean wakeOnWorldLoad;
+        public final Integer computerId; // null if not determined yet
+        public final Double radiusOverride; // null if no override set
+
+        public RemoteManagementState(ChunkPos lastKnownPosition, int lastKnownFuel, boolean wakeOnWorldLoad, Integer computerId, Double radiusOverride) {
+            this.lastKnownPosition = lastKnownPosition;
+            this.lastKnownFuel = lastKnownFuel;
+            this.wakeOnWorldLoad = wakeOnWorldLoad;
+            this.computerId = computerId;
+            this.radiusOverride = radiusOverride;
+        }
+        
+        // Convenience constructor for backward compatibility
+        public RemoteManagementState(ChunkPos lastKnownPosition, int lastKnownFuel, boolean wakeOnWorldLoad, Integer computerId) {
+            this(lastKnownPosition, lastKnownFuel, wakeOnWorldLoad, computerId, null);
+        }
+
+        /**
+         * Create from SavedState (turtle's own NBT data)
+         */
+        public static RemoteManagementState fromSavedState(ChunkLoaderPeripheral.SavedState savedState, Integer computerId) {
+            return new RemoteManagementState(
+                savedState.lastChunkPos,
+                savedState.fuelLevel,
+                savedState.wakeOnWorldLoad,
+                computerId,
+                null // No radius override from saved state
+            );
+        }
+
+        /**
+         * Convert to SavedState format for bootstrap
+         */
+        public ChunkLoaderPeripheral.SavedState toSavedState() {
+            return new ChunkLoaderPeripheral.SavedState(
+                0.0, // radius - loaded from turtle's own NBT
+                lastKnownPosition,
+                0.0, // fuelDebt - loaded from turtle's own NBT  
+                wakeOnWorldLoad,
+                false, // randomTickEnabled - loaded from turtle's own NBT
+                lastKnownFuel
+            );
+        }
     }
 
     /**
@@ -759,10 +968,8 @@ public class ChunkManager {
     public synchronized DeserializationResult deserializeFromNbt(NbtCompound nbt) {
         chunkLoaders.clear();
         turtleChunks.clear();
-        restoredTurtleStates.clear();
-        computerIdToUUIDs.clear();
-        uuidToComputerId.clear();
-        // DON'T clear turtleStateCache - merge with existing data to preserve any runtime state
+        computerTracker.clear();
+        // DON'T clear remoteManagementStates - merge with existing data to preserve any runtime state
 
         if (nbt.contains("turtleStates")) {
             NbtList turtleStatesNbt = nbt.getList("turtleStates", 10);
@@ -798,22 +1005,19 @@ public class ChunkManager {
                     // Track turtle for bootstrap purposes
                     turtleChunks.put(turtleId, ConcurrentHashMap.newKeySet());
                     restoredTurtleStates.put(turtleId, bootstrapState);
-                    turtleStateCache.put(turtleId, bootstrapState);
                     
-                    // CRITICAL: Update persistent tracking with loaded data
-                    if (lastChunkPos != null) {
-                        persistentPositions.put(turtleId, lastChunkPos);
+                    // CRITICAL: Update remote management state with loaded data
+                    Integer computerIdForState = null;
+                    if (stateData.contains("computerId")) {
+                        computerIdForState = stateData.getInt("computerId");
                     }
-                    if (fuelLevel >= 0) {
-                        persistentFuelLevels.put(turtleId, fuelLevel);
-                    }
+                    updateRemoteManagementState(turtleId, lastChunkPos, fuelLevel >= 0 ? fuelLevel : 1, wakeOnWorldLoad, computerIdForState);
                     
                     // CRITICAL: Restore computer ID mapping if available
                     if (stateData.contains("computerId")) {
-                        int computerId = stateData.getInt("computerId");
-                        computerIdToUUIDs.computeIfAbsent(computerId, k -> ConcurrentHashMap.newKeySet()).add(turtleId);
-                        uuidToComputerId.put(turtleId, computerId);
-                        LOGGER.debug("Restored computer ID mapping: UUID {} -> Computer {}", turtleId, computerId);
+                        int computerIdFromNbt = stateData.getInt("computerId");
+                        computerTracker.register(computerIdFromNbt, turtleId);
+                        LOGGER.debug("Restored computer ID mapping: UUID {} -> Computer {}", turtleId, computerIdFromNbt);
                     }
                     
                     LOGGER.debug("Restored turtle bootstrap data {}: pos=({},{}), fuel={}, wake={}", 
@@ -825,20 +1029,27 @@ public class ChunkManager {
             }
         }
 
-        // Deserialize radius overrides
+        // Radius overrides are now part of remoteManagementStates - legacy handling for old saves
         if (nbt.contains("radiusOverrides")) {
             NbtCompound radiusOverridesNbt = nbt.getCompound("radiusOverrides");
             for (String uuidString : radiusOverridesNbt.getKeys()) {
                 try {
                     UUID turtleId = UUID.fromString(uuidString);
                     double radius = radiusOverridesNbt.getDouble(uuidString);
-                    radiusOverrides.put(turtleId, radius);
-                    LOGGER.debug("Restored radius override for turtle {}: {}", turtleId, radius);
+                    // Apply to existing remote management state if it exists
+                    RemoteManagementState current = remoteManagementStates.get(turtleId);
+                    if (current != null) {
+                        RemoteManagementState updated = new RemoteManagementState(
+                            current.lastKnownPosition, current.lastKnownFuel, current.wakeOnWorldLoad, current.computerId, radius
+                        );
+                        remoteManagementStates.put(turtleId, updated);
+                        LOGGER.debug("Migrated legacy radius override for turtle {}: {}", turtleId, radius);
+                    }
                 } catch (Exception e) {
-                    LOGGER.error("Failed to restore radius override for UUID {}: {}", uuidString, e.getMessage());
+                    LOGGER.error("Failed to migrate legacy radius override for UUID {}: {}", uuidString, e.getMessage());
                 }
             }
-            LOGGER.info("Deserialized {} radius overrides from NBT", radiusOverrides.size());
+            LOGGER.info("Migrated {} legacy radius overrides to unified state", radiusOverridesNbt.getKeys().size());
         }
 
         // Count how many turtles should wake on world load
@@ -850,7 +1061,7 @@ public class ChunkManager {
         LOGGER.info("Deserialized {} turtle bootstrap records from NBT ({} to wake on world load)", 
                    totalCount, toWakeCount);
         LOGGER.info("Restored computer ID mappings for {} computers with {} total UUIDs", 
-                   computerIdToUUIDs.size(), uuidToComputerId.size());
+                   computerTracker.getAllComputerIds().size(), computerTracker.getStats().get("totalUUIDs"));
         return new DeserializationResult(totalCount, toWakeCount);
     }
 
@@ -869,24 +1080,20 @@ public class ChunkManager {
         
         // Debug: Show what data we have for this turtle
         boolean inTurtleChunks = turtleChunks.containsKey(turtleId);
-        boolean inStateCache = turtleStateCache.containsKey(turtleId);
+        boolean inRemoteState = remoteManagementStates.containsKey(turtleId);
         boolean inRestoredStates = restoredTurtleStates.containsKey(turtleId);
-        LOGGER.info("Turtle {} tracking status: chunks={}, cache={}, restored={}", 
-                   turtleId, inTurtleChunks, inStateCache, inRestoredStates);
+        LOGGER.info("Turtle {} tracking status: chunks={}, remote={}, restored={}", 
+                   turtleId, inTurtleChunks, inRemoteState, inRestoredStates);
         
         // Check if we have cached state for this turtle
-        ChunkLoaderPeripheral.SavedState cachedState = turtleStateCache.get(turtleId);
+        ChunkLoaderPeripheral.SavedState cachedState = getCachedTurtleState(turtleId);
         if (cachedState == null) {
-            // Check restored states as fallback
-            cachedState = restoredTurtleStates.get(turtleId);
-            if (cachedState != null) {
-                LOGGER.info("Using restored state for turtle {}", turtleId);
-            }
+            LOGGER.info("No cached state available for turtle {}", turtleId);
         }
         
         if (cachedState == null) {
-            LOGGER.warn("Cannot bootstrap turtle {} - no cached state available (chunks={}, cache={}, restored={})", 
-                       turtleId, inTurtleChunks, inStateCache, inRestoredStates);
+            LOGGER.warn("Cannot bootstrap turtle {} - no cached state available (chunks={}, remote={})", 
+                       turtleId, inTurtleChunks, inRemoteState);
             return BootstrapResult.noData();
         }
         
@@ -902,14 +1109,7 @@ public class ChunkManager {
         LOGGER.info("Bootstrapping turtle {} at chunk {} with {} fuel", 
                    turtleId, cachedState.lastChunkPos, cachedState.fuelLevel);
         
-        // Create temporary bootstrap data
-        ChunkLoaderRegistry.updateBootstrapData(
-            turtleId, 
-            world.getRegistryKey(), 
-            cachedState.lastChunkPos, 
-            cachedState.fuelLevel, 
-            true  // Temporarily set wake=true for bootstrap
-        );
+        // No need to create temporary bootstrap data - we have it in remoteManagementStates
         
         // Force-load the turtle's chunk to wake it up
         world.setChunkForced(cachedState.lastChunkPos.x, cachedState.lastChunkPos.z, true);
@@ -945,12 +1145,12 @@ public class ChunkManager {
      * It only wakes turtles that have explicitly opted-in and have fuel.
      */
     public void wakeTurtlesOnLoad() {
-        int restoredCount = restoredTurtleStates.size();
+        int restoredCount = remoteManagementStates.size();
         if (restoredCount == 0) {
             return;
         }
 
-        long turtlesToWake = restoredTurtleStates.values().stream()
+        long turtlesToWake = remoteManagementStates.values().stream()
             .filter(state -> state.wakeOnWorldLoad)
             .count();
 
@@ -961,28 +1161,24 @@ public class ChunkManager {
 
         LOGGER.info("Attempting to wake {}/{} restored turtles that have opted-in...", turtlesToWake, restoredCount);
 
-        for (Map.Entry<UUID, ChunkLoaderPeripheral.SavedState> entry : restoredTurtleStates.entrySet()) {
+        for (Map.Entry<UUID, RemoteManagementState> entry : remoteManagementStates.entrySet()) {
             UUID turtleId = entry.getKey();
-            ChunkLoaderPeripheral.SavedState state = entry.getValue();
+            RemoteManagementState state = entry.getValue();
+            
+            // Convert to SavedState for compatibility
+            ChunkLoaderPeripheral.SavedState savedState = state.toSavedState();
 
             // Wake the turtle only if it has opted-in
-            if (state.wakeOnWorldLoad) {
+            if (savedState.wakeOnWorldLoad) {
                 // AND check if it has fuel
-                if (state.fuelLevel == 0) {
+                if (savedState.fuelLevel == 0) {
                     LOGGER.warn("Skipping wake for opt-in turtle {} because it has no fuel.", turtleId);
                     continue;
                 }
 
-                // Add to bootstrap registry for simplified wakeup
-                if (state.lastChunkPos != null) {
-                    ChunkLoaderRegistry.updateBootstrapData(
-                        turtleId,
-                        this.world.getRegistryKey(),
-                        state.lastChunkPos,
-                        state.fuelLevel,
-                        state.wakeOnWorldLoad
-                    );
-                    LOGGER.info("Added turtle {} to bootstrap registry for wakeup", turtleId);
+                // Bootstrap data already available in remoteManagementStates
+                if (savedState.lastChunkPos != null) {
+                    LOGGER.info("Turtle {} available for bootstrap wakeup", turtleId);
                 } else {
                     LOGGER.warn("Cannot bootstrap turtle {} - no last known position", turtleId);
                 }
@@ -993,38 +1189,33 @@ public class ChunkManager {
     /**
      * Register a UUID for a specific computer ID
      */
-    public synchronized void registerUUIDForComputer(int computerId, UUID turtleId) {
-        computerIdToUUIDs.computeIfAbsent(computerId, k -> ConcurrentHashMap.newKeySet()).add(turtleId);
-        uuidToComputerId.put(turtleId, computerId);
+    public void registerUUIDForComputer(int computerId, UUID turtleId) {
+        computerTracker.register(computerId, turtleId);
         LOGGER.debug("Registered UUID {} for computer ID {}", turtleId, computerId);
     }
 
     /**
      * Get all UUIDs associated with a computer ID
      */
-    public synchronized Set<UUID> getUUIDsForComputer(int computerId) {
-        return Set.copyOf(computerIdToUUIDs.getOrDefault(computerId, Set.of()));
+    public Set<UUID> getUUIDsForComputer(int computerId) {
+        return computerTracker.getUUIDsForComputer(computerId);
     }
 
     /**
      * Get computer ID for a UUID
      */
-    public synchronized Integer getComputerIdForUUID(UUID turtleId) {
-        return uuidToComputerId.get(turtleId);
+    public Integer getComputerIdForUUID(UUID turtleId) {
+        return computerTracker.getComputerForUUID(turtleId);
     }
 
     /**
      * Validate UUIDs for a computer - remove any that aren't currently equipped
      * Only call this when the turtle is confirmed loaded and active
      */
-    public synchronized void validateUUIDsForComputer(int computerId, Set<UUID> currentlyEquippedUUIDs) {
-        Set<UUID> storedUUIDs = computerIdToUUIDs.get(computerId);
-        if (storedUUIDs == null) return;
-
-        Set<UUID> toRemove = new HashSet<>(storedUUIDs);
-        toRemove.removeAll(currentlyEquippedUUIDs);
-
-        for (UUID orphanedUUID : toRemove) {
+    public void validateUUIDsForComputer(int computerId, Set<UUID> currentlyEquippedUUIDs) {
+        Set<UUID> orphanedUUIDs = computerTracker.validateAndCleanup(computerId, currentlyEquippedUUIDs);
+        
+        for (UUID orphanedUUID : orphanedUUIDs) {
             LOGGER.info("Removing orphaned UUID {} from computer {} (no longer equipped)", orphanedUUID, computerId);
             permanentlyRemoveTurtle(orphanedUUID);
         }
@@ -1033,20 +1224,15 @@ public class ChunkManager {
     /**
      * Get all computer IDs that have registered UUIDs
      */
-    public synchronized Set<Integer> getAllComputerIds() {
-        return Set.copyOf(computerIdToUUIDs.keySet());
+    public Set<Integer> getAllComputerIds() {
+        return computerTracker.getAllComputerIds();
     }
 
     /**
      * Get statistics about computer ID tracking
      */
-    public synchronized Map<String, Object> getComputerIdStats() {
-        Map<String, Object> stats = new HashMap<>();
-        stats.put("totalComputers", computerIdToUUIDs.size());
-        stats.put("totalUUIDs", uuidToComputerId.size());
-        stats.put("orphanedUUIDs", uuidToComputerId.size() - computerIdToUUIDs.values().stream().mapToInt(Set::size).sum());
-        return stats;
+    public Map<String, Object> getComputerIdStats() {
+        return computerTracker.getStats();
     }
-
 
 }
