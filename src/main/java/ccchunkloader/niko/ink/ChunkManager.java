@@ -27,8 +27,6 @@ public class ChunkManager {
     private final Map<ChunkPos, Set<UUID>> chunkLoaders = new ConcurrentHashMap<>();
     // Map from turtle UUID to set of chunks they're currently loading
     private final Map<UUID, Set<ChunkPos>> turtleChunks = new ConcurrentHashMap<>();
-    // Timestamp of last activity for cleanup
-    private final Map<UUID, Long> lastTouch = new ConcurrentHashMap<>();
     // Cache of turtle states for persistence (survives peripheral cleanup)
     private final Map<UUID, ChunkLoaderPeripheral.SavedState> turtleStateCache = new ConcurrentHashMap<>();
     // Persistent position tracking (source of truth for turtle positions)
@@ -256,7 +254,6 @@ public class ChunkManager {
                 turtleChunks.put(turtleId, ConcurrentHashMap.newKeySet());
                 chunks = Set.copyOf(chunks); // Make a copy for iteration
             }
-            // DON'T remove from lastTouch - keep turtle tracked for persistence
         }
 
         // PHASE 2: Remove chunks WITHOUT holding locks (can block safely)
@@ -303,7 +300,7 @@ public class ChunkManager {
      * Check if a turtle is already tracked in this ChunkManager
      */
     public boolean isTurtleTracked(UUID turtleId) {
-        return lastTouch.containsKey(turtleId) && turtleChunks.containsKey(turtleId);
+        return turtleChunks.containsKey(turtleId);
     }
 
     /**
@@ -311,9 +308,6 @@ public class ChunkManager {
      * Also ensures the turtle is tracked in turtleChunks even with empty chunk set
      */
     public void touch(UUID turtleId) {
-        long timestamp = System.currentTimeMillis();
-        lastTouch.put(turtleId, timestamp);
-
         // Ensure turtle is tracked in turtleChunks even if it has no chunks loaded
         // This is important for persistence - we want to save ALL turtle interactions
         if (!turtleChunks.containsKey(turtleId)) {
@@ -445,47 +439,6 @@ public class ChunkManager {
         return chunks != null ? Set.copyOf(chunks) : Set.of();
     }
 
-    /**
-     * Cleanup inactive chunk loaders (called periodically)
-     * IMPORTANT: World operations are done OUTSIDE synchronized blocks to prevent deadlocks
-     * NOTE: This method now preserves turtle state instead of removing inactive turtles
-     */
-    public void cleanup(long maxInactiveTime) {
-        long currentTime = System.currentTimeMillis();
-
-        // PHASE 1: Identify inactive turtles under lock (fast, non-blocking)
-        Set<UUID> inactiveTurtles = ConcurrentHashMap.newKeySet();
-        synchronized (this) {
-            for (Map.Entry<UUID, Long> entry : lastTouch.entrySet()) {
-                UUID turtleId = entry.getKey();
-                long lastActivity = entry.getValue();
-
-                if (currentTime - lastActivity > maxInactiveTime) {
-                    inactiveTurtles.add(turtleId);
-                }
-            }
-            // DON'T remove from lastTouch - keep turtles tracked for persistence
-        }
-
-        // PHASE 2: Clean up inactive turtles WITHOUT holding locks (can block safely)
-        // Preserve turtle state in cache and only remove active chunk loading
-        for (UUID turtleId : inactiveTurtles) {
-            LOGGER.info("Deactivating inactive turtle chunk loader: {} (preserving state)", turtleId);
-            
-            // Try to preserve state from active peripheral before cleanup
-            ChunkLoaderPeripheral peripheral = ChunkLoaderRegistry.getPeripheral(turtleId);
-            if (peripheral != null) {
-                ChunkLoaderPeripheral.SavedState state = peripheral.getSavedState();
-                if (state != null) {
-                    updateTurtleStateCache(turtleId, state);
-                    LOGGER.debug("Preserved state for inactive turtle {} in cache", turtleId);
-                }
-            }
-            
-            // Only remove chunk loading, not turtle tracking
-            removeAllChunks(turtleId);
-        }
-    }
 
     /**
      * Get total number of force-loaded chunks in this world
@@ -582,7 +535,7 @@ public class ChunkManager {
             for (UUID turtleId : turtleChunks.keySet()) {
                 turtleChunks.put(turtleId, ConcurrentHashMap.newKeySet());
             }
-            // DON'T clear lastTouch, turtleStateCache, persistentPositions, or persistentFuelLevels - preserve turtle data
+            // DON'T clear turtleStateCache, persistentPositions, or persistentFuelLevels - preserve turtle data
         }
 
         // PHASE 2: Unforce chunks WITHOUT holding locks (can block safely)
@@ -616,7 +569,6 @@ public class ChunkManager {
         synchronized (this) {
             // Now actually remove from tracking maps
             turtleChunks.remove(turtleId);
-            lastTouch.remove(turtleId);
             turtleStateCache.remove(turtleId);
             restoredTurtleStates.remove(turtleId);
             persistentPositions.remove(turtleId);
@@ -807,7 +759,6 @@ public class ChunkManager {
     public synchronized DeserializationResult deserializeFromNbt(NbtCompound nbt) {
         chunkLoaders.clear();
         turtleChunks.clear();
-        lastTouch.clear();
         restoredTurtleStates.clear();
         computerIdToUUIDs.clear();
         uuidToComputerId.clear();
@@ -846,7 +797,6 @@ public class ChunkManager {
 
                     // Track turtle for bootstrap purposes
                     turtleChunks.put(turtleId, ConcurrentHashMap.newKeySet());
-                    lastTouch.put(turtleId, System.currentTimeMillis());
                     restoredTurtleStates.put(turtleId, bootstrapState);
                     turtleStateCache.put(turtleId, bootstrapState);
                     

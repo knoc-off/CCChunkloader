@@ -100,12 +100,6 @@ public class ChunkloaderCommand {
                     case "RANDOM_TICK_FUEL_MULTIPLIER":
                         ctx.getSource().sendFeedback(() -> Text.literal("RANDOM_TICK_FUEL_MULTIPLIER: " + Config.RANDOM_TICK_FUEL_MULTIPLIER), false);
                         break;
-                    case "CLEANUP_INTERVAL_TICKS":
-                        ctx.getSource().sendFeedback(() -> Text.literal("CLEANUP_INTERVAL_TICKS: " + Config.CLEANUP_INTERVAL_TICKS), false);
-                        break;
-                    case "MAX_INACTIVE_TIME_MS":
-                        ctx.getSource().sendFeedback(() -> Text.literal("MAX_INACTIVE_TIME_MS: " + Config.MAX_INACTIVE_TIME_MS), false);
-                        break;
                     default:
                         ctx.getSource().sendError(Text.literal("Unknown config key: " + key));
                         break;
@@ -132,12 +126,6 @@ public class ChunkloaderCommand {
                                 break;
                             case "RANDOM_TICK_FUEL_MULTIPLIER":
                                 Config.RANDOM_TICK_FUEL_MULTIPLIER = Double.parseDouble(value);
-                                break;
-                            case "CLEANUP_INTERVAL_TICKS":
-                                Config.CLEANUP_INTERVAL_TICKS = Integer.parseInt(value);
-                                break;
-                            case "MAX_INACTIVE_TIME_MS":
-                                Config.MAX_INACTIVE_TIME_MS = Long.parseLong(value);
                                 break;
                             default:
                                 ctx.getSource().sendError(Text.literal("Unknown config key: " + key));
@@ -218,10 +206,6 @@ public class ChunkloaderCommand {
         source.sendFeedback(() -> Text.literal("§e  DISTANCE_MULTIPLIER: §f" + Config.DISTANCE_MULTIPLIER + " §7(distance cost multiplier)"), false);
         source.sendFeedback(() -> Text.literal("§e  RANDOM_TICK_FUEL_MULTIPLIER: §f" + Config.RANDOM_TICK_FUEL_MULTIPLIER + " §7(random tick cost multiplier)"), false);
         
-        source.sendFeedback(() -> Text.literal("§7Cleanup Settings §c(DANGEROUS):"), false);
-        source.sendFeedback(() -> Text.literal("§e  ENABLE_TIME_BASED_CLEANUP: §f" + Config.ENABLE_TIME_BASED_CLEANUP + " §c(destroys turtle data!)"), false);
-        source.sendFeedback(() -> Text.literal("§e  CLEANUP_INTERVAL_TICKS: §f" + Config.CLEANUP_INTERVAL_TICKS + " §7(cleanup check interval)"), false);
-        source.sendFeedback(() -> Text.literal("§e  MAX_INACTIVE_TIME_MS: §f" + Config.MAX_INACTIVE_TIME_MS + " §7(max inactive time)"), false);
         
         source.sendFeedback(() -> Text.literal("§7Use §e/ccchunkloader set <key> <value> §7to change values"), false);
     }

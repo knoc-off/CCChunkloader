@@ -5,7 +5,6 @@ import dan200.computercraft.api.turtle.TurtleUpgradeSerialiser;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
-import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerWorldEvents;
 import net.fabricmc.fabric.api.itemgroup.v1.ItemGroupEvents;
 import net.minecraft.block.AbstractBlock;
@@ -35,7 +34,6 @@ public class CCChunkloader implements ModInitializer {
 	public static final String MOD_ID = "ccchunkloader";
 	private static final Logger LOGGER = LoggerFactory.getLogger(CCChunkloader.class);
 
-	private static int tickCounter = 0;
 
 	public static final Item CHUNKLOADER_UPGRADE = new Item(new Item.Settings());
 
@@ -95,7 +93,6 @@ public class CCChunkloader implements ModInitializer {
 
 		// Register lifecycle events
 		ServerLifecycleEvents.SERVER_STOPPING.register(this::onServerStopping);
-		ServerTickEvents.END_SERVER_TICK.register(this::onServerTick);
 		ServerWorldEvents.LOAD.register(this::onWorldLoad);
 		ServerWorldEvents.UNLOAD.register(this::onWorldUnload);
 		CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> ChunkloaderCommand.register(dispatcher));
@@ -112,30 +109,6 @@ public class CCChunkloader implements ModInitializer {
 		ChunkLoaderRegistry.clearAll();
 	}
 
-	private void onServerTick(MinecraftServer server) {
-		// Time-based cleanup is DISABLED BY DEFAULT because it destroys user turtle data inappropriately
-		// Only run time-based cleanup if explicitly enabled in config (NOT recommended)
-		if (Config.ENABLE_TIME_BASED_CLEANUP) {
-			tickCounter++;
-			if (tickCounter >= Config.CLEANUP_INTERVAL_TICKS) {
-				tickCounter = 0;
-
-				server.getWorlds().forEach(world -> {
-					ChunkManager manager = ChunkManager.get(world);
-					manager.cleanup(Config.MAX_INACTIVE_TIME_MS);
-					LOGGER.warn("Time-based cleanup executed - this may have removed dormant turtles permanently!");
-				});
-			}
-		}
-		
-		// TODO: Add proper cleanup triggers:
-		// 1. When turtle upgrade is unequipped (peripheral removal detection)
-		// 2. When same turtle gets new UUID (upgrade re-equipped) 
-		// 3. Manual admin commands for explicit turtle removal
-		
-		// By default, turtles persist indefinitely until explicitly removed
-		// This prevents data loss and matches user expectations for "dormant turtle" behavior
-	}
 
 	private void onWorldLoad(MinecraftServer server, ServerWorld world) {
         // Get the persistent state for the world.
