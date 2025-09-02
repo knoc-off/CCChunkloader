@@ -26,6 +26,11 @@ public class ChunkLoaderPeripheral implements IPeripheral {
     private static final String WAKE_ON_WORLD_LOAD_KEY = "WakeOnWorldLoad";
     private static final String RANDOM_TICK_ENABLED_KEY = "RandomTickEnabled";
     private static final String LAST_CHUNK_POS_KEY = "LastChunkPos";
+    
+    // Numeric constants
+    private static final double FUEL_DEBT_THRESHOLD = 1.0; // Minimum fuel debt to consume fuel
+    private static final double FUEL_DEBT_EPSILON = 0.001; // Threshold for detecting fuel debt changes
+    private static final int CHUNK_SEARCH_PADDING = 1; // Extra chunks to search when computing radius
 
     private final ITurtleAccess turtle;
     private final TurtleSide side;
@@ -118,7 +123,7 @@ public class ChunkLoaderPeripheral implements IPeripheral {
                 setRadiusAsync(serverWorld, oldRadius, newRadius);
             });
 
-            LOGGER.debug("Turtle {} queued radius change from {} to {} (async)", turtleId, oldRadius, newRadius);
+
         }
 
         return newRadius;
@@ -188,7 +193,7 @@ public class ChunkLoaderPeripheral implements IPeripheral {
             ChunkManager.get(serverWorld).touch(turtleId);
         }
 
-        LOGGER.debug("Turtle {} wake on world load set to {}", turtleId, wake);
+
     }
 
     @LuaFunction
@@ -235,7 +240,7 @@ public class ChunkLoaderPeripheral implements IPeripheral {
         Set<ChunkPos> chunks = new HashSet<>();
         if (radius <= 0.0) return chunks;
 
-        int searchRadius = (int) Math.ceil(radius) + 1;
+        int searchRadius = (int) Math.ceil(radius) + CHUNK_SEARCH_PADDING;
         for (int x = -searchRadius; x <= searchRadius; x++) {
             for (int z = -searchRadius; z <= searchRadius; z++) {
                 double distance = Math.sqrt(x * x + z * z);
@@ -256,18 +261,37 @@ public class ChunkLoaderPeripheral implements IPeripheral {
         boolean moved = this.lastChunkPos == null || !this.lastChunkPos.equals(currentChunk);
         boolean stateChanged = false;
 
-        // Core persistence logic: always update the turtle's last known position
-        // and "touch" it in the manager to mark it for saving.
+        // Update position tracking
         if (moved) {
             this.lastChunkPos = currentChunk;
             stateChanged = true;
         }
         
-        // CRITICAL: Always update persistent tracking data as source of truth
+        // Always update persistent tracking data
+        updatePersistentState(manager, currentChunk);
+
+        // Register computer ID if needed
+        tryRegisterComputerId(manager, serverWorld);
+
+        // Handle chunk loading based on radius
+        if (radius > 0.0) {
+            stateChanged |= updateActiveChunkLoading(manager, currentChunk, moved);
+        } else {
+            cleanupInactiveChunks(manager);
+        }
+
+        // Save state if anything changed
+        if (stateChanged) {
+            saveStateToUpgradeNBT();
+        }
+    }
+
+    private void updatePersistentState(ChunkManager manager, ChunkPos currentChunk) {
         manager.updateTurtlePosition(turtleId, currentChunk);
         manager.updateTurtleFuel(turtleId, turtle.getFuelLevel());
+    }
 
-        // DEFERRED: Register computer ID when ServerComputer becomes available
+    private void tryRegisterComputerId(ChunkManager manager, ServerWorld serverWorld) {
         if (!computerIdRegistered) {
             Integer computerId = getTurtleComputerId();
             if (computerId != null) {
@@ -275,56 +299,63 @@ public class ChunkLoaderPeripheral implements IPeripheral {
                 LOGGER.info("Registered turtle {} (UUID: {}) with computer ID {} [DEFERRED]", 
                            turtle.getPosition(), turtleId, computerId);
                 
-                // Validate UUIDs for this computer to clean up orphaned UUIDs
                 validateComputerUUIDs(manager, computerId, serverWorld);
                 computerIdRegistered = true;
             }
         }
+    }
 
-        if (radius > 0.0) {
-            // Update chunks if the turtle moved or if it should have chunks loaded but doesn't.
-            if (moved || !manager.hasLoadedChunks(turtleId)) {
-                double fuelCostPerTick = calculateFuelCost();
-                if (turtle.getFuelLevel() > 0 && fuelCostPerTick > 0) {
-                    Set<ChunkPos> chunksToLoad = computeChunks(currentChunk, radius);
-                    manager.addChunksFromSet(turtleId, chunksToLoad);
-                } else {
-                    this.radius = 0.0;
-                    this.fuelDebt = 0.0;
-                    manager.removeAllChunks(turtleId);
-                    stateChanged = true;
-                    LOGGER.debug("Turtle {} cannot afford chunk loading, disabling.", turtleId);
-                }
-            }
-
-            // Consume fuel
-            double oldFuelDebt = fuelDebt;
-            fuelDebt += calculateFuelCost();
-            if (fuelDebt >= 1.0) {
-                int fuelToConsume = (int) Math.floor(fuelDebt);
-                if (turtle.getFuelLevel() >= fuelToConsume && turtle.consumeFuel(fuelToConsume)) {
-                    fuelDebt -= fuelToConsume;
-                    stateChanged = true;
-                } else {
-                    this.radius = 0.0;
-                    this.fuelDebt = 0.0;
-                    manager.removeAllChunks(turtleId);
-                    stateChanged = true;
-                    LOGGER.debug("Turtle {} ran out of fuel, disabling chunk loading.", turtleId);
-                }
-            } else if (Math.abs(fuelDebt - oldFuelDebt) > 0.001) {
-                stateChanged = true;
-            }
-        } else {
-            // If radius is 0, ensure no chunks are loaded as a cleanup measure.
-            if (manager.hasLoadedChunks(turtleId)) {
-                manager.removeAllChunks(turtleId);
+    private boolean updateActiveChunkLoading(ChunkManager manager, ChunkPos currentChunk, boolean moved) {
+        boolean stateChanged = false;
+        
+        // Update chunks if the turtle moved or if it should have chunks loaded but doesn't
+        if (moved || !manager.hasLoadedChunks(turtleId)) {
+            double fuelCostPerTick = calculateFuelCost();
+            if (turtle.getFuelLevel() > 0 && fuelCostPerTick > 0) {
+                Set<ChunkPos> chunksToLoad = computeChunks(currentChunk, radius);
+                manager.addChunksFromSet(turtleId, chunksToLoad);
+            } else {
+                stateChanged = disableChunkLoading(manager, "cannot afford chunk loading");
             }
         }
 
-        // Save state if anything changed
-        if (stateChanged) {
-            saveStateToUpgradeNBT();
+        // Consume fuel
+        stateChanged |= processFuelConsumption(manager);
+        
+        return stateChanged;
+    }
+
+    private boolean processFuelConsumption(ChunkManager manager) {
+        double oldFuelDebt = fuelDebt;
+        fuelDebt += calculateFuelCost();
+        
+        if (fuelDebt >= FUEL_DEBT_THRESHOLD) {
+            int fuelToConsume = (int) Math.floor(fuelDebt);
+            if (turtle.getFuelLevel() >= fuelToConsume && turtle.consumeFuel(fuelToConsume)) {
+                fuelDebt -= fuelToConsume;
+                return true;
+            } else {
+                return disableChunkLoading(manager, "ran out of fuel");
+            }
+        } else if (Math.abs(fuelDebt - oldFuelDebt) > FUEL_DEBT_EPSILON) {
+            return true;
+        }
+        
+        return false;
+    }
+
+    private boolean disableChunkLoading(ChunkManager manager, String reason) {
+        this.radius = 0.0;
+        this.fuelDebt = 0.0;
+        manager.removeAllChunks(turtleId);
+        LOGGER.debug("Turtle {} {}, disabling chunk loading.", turtleId, reason);
+        return true;
+    }
+
+    private void cleanupInactiveChunks(ChunkManager manager) {
+        // If radius is 0, ensure no chunks are loaded as a cleanup measure
+        if (manager.hasLoadedChunks(turtleId)) {
+            manager.removeAllChunks(turtleId);
         }
     }
 
@@ -507,8 +538,7 @@ public class ChunkLoaderPeripheral implements IPeripheral {
             this.lastChunkPos = new ChunkPos(chunkPosNbt.getInt("x"), chunkPosNbt.getInt("z"));
         }
 
-        LOGGER.debug("Loaded state from upgrade NBT: radius={}, fuelDebt={}, wake={}, randomTick={}, lastChunk={}",
-                    radius, fuelDebt, wakeOnWorldLoad, randomTickEnabled, lastChunkPos);
+
     }
 
     /**
@@ -534,8 +564,7 @@ public class ChunkLoaderPeripheral implements IPeripheral {
         // Update ChunkManager cache for persistence of dormant turtles
         updateChunkManagerCache();
 
-        LOGGER.debug("Saved state to upgrade NBT: radius={}, fuelDebt={}, wake={}, randomTick={}, lastChunk={}",
-                    radius, fuelDebt, wakeOnWorldLoad, randomTickEnabled, lastChunkPos);
+
     }
 
     
@@ -555,7 +584,7 @@ public class ChunkLoaderPeripheral implements IPeripheral {
      */
     private void resumeChunkLoading(ServerWorld serverWorld) {
         if (radius <= 0.0) {
-            LOGGER.debug("Turtle {} radius is 0, skipping chunk loading resume", turtleId);
+
             return;
         }
 
@@ -607,7 +636,7 @@ public class ChunkLoaderPeripheral implements IPeripheral {
             if (leftUpgrade instanceof ChunkLoaderUpgrade) {
                 UUID leftUUID = ChunkLoaderUpgrade.getTurtleUUID(turtle, dan200.computercraft.api.turtle.TurtleSide.LEFT);
                 currentlyEquippedUUIDs.add(leftUUID);
-                LOGGER.debug("Computer {} has chunkloader on LEFT side with UUID {}", computerId, leftUUID);
+
             }
             
             // Check RIGHT side
@@ -615,7 +644,7 @@ public class ChunkLoaderPeripheral implements IPeripheral {
             if (rightUpgrade instanceof ChunkLoaderUpgrade) {
                 UUID rightUUID = ChunkLoaderUpgrade.getTurtleUUID(turtle, dan200.computercraft.api.turtle.TurtleSide.RIGHT);
                 currentlyEquippedUUIDs.add(rightUUID);
-                LOGGER.debug("Computer {} has chunkloader on RIGHT side with UUID {}", computerId, rightUUID);
+
             }
 
             LOGGER.info("Computer {} validation: found {} currently equipped chunkloaders", 
