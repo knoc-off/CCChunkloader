@@ -422,59 +422,21 @@ public class ChunkLoaderPeripheral implements IPeripheral {
         return new TurtleInfo(turtleId, turtle.getPosition(), turtle.getFuelLevel(), radius, 0, 0.0);
     }
 
-    /**
-     * Data class for turtle information
-     */
-    public static class TurtleInfo {
-        public final UUID turtleId;
-        public final net.minecraft.util.math.BlockPos position;
-        public final int fuelLevel;
-        public final double radius;
-        public final int loadedChunks;
-        public final double fuelRate;
 
-        public TurtleInfo(UUID turtleId, net.minecraft.util.math.BlockPos position, int fuelLevel, double radius, int loadedChunks, double fuelRate) {
-            this.turtleId = turtleId;
-            this.position = position;
-            this.fuelLevel = fuelLevel;
-            this.radius = radius;
-            this.loadedChunks = loadedChunks;
-            this.fuelRate = fuelRate;
-        }
-    }
 
-    /**
-     * Data class for saving/loading turtle chunk loader state
-     */
-    public static class SavedState {
-        public final double radius;
-        public final ChunkPos lastChunkPos;
-        public final double fuelDebt;
-        public final boolean wakeOnWorldLoad;
-        public final boolean randomTickEnabled;
-        public final int fuelLevel;
 
-        public SavedState(double radius, ChunkPos lastChunkPos, double fuelDebt, boolean wakeOnWorldLoad, boolean randomTickEnabled, int fuelLevel) {
-            this.radius = radius;
-            this.lastChunkPos = lastChunkPos;
-            this.fuelDebt = fuelDebt;
-            this.wakeOnWorldLoad = wakeOnWorldLoad;
-            this.randomTickEnabled = randomTickEnabled;
-            this.fuelLevel = fuelLevel;
-        }
-    }
 
     /**
      * Get current state for saving to NBT
      */
-    public SavedState getSavedState() {
-        return new SavedState(radius, lastChunkPos, fuelDebt, wakeOnWorldLoad, randomTickEnabled, turtle.getFuelLevel());
+    public ChunkLoaderState getSavedState() {
+        return new ChunkLoaderState(radius, lastChunkPos, fuelDebt, wakeOnWorldLoad, randomTickEnabled, turtle.getFuelLevel());
     }
 
     /**
      * Restore state from saved data (used when reviving turtle after world load)
      */
-    public void restoreState(SavedState state) {
+    public void restoreState(ChunkLoaderState state) {
         this.radius = state.radius;
         this.lastChunkPos = state.lastChunkPos;
         this.fuelDebt = state.fuelDebt;
@@ -583,7 +545,7 @@ public class ChunkLoaderPeripheral implements IPeripheral {
     private void updateChunkManagerCache() {
         if (turtle.getLevel() instanceof ServerWorld serverWorld) {
             ChunkManager manager = ChunkManager.get(serverWorld);
-            SavedState currentState = getSavedState();
+            ChunkLoaderState currentState = getSavedState();
             manager.updateTurtleStateCache(turtleId, currentState);
         }
     }

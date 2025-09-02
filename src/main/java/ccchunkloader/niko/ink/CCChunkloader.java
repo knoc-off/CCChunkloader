@@ -163,12 +163,12 @@ public class CCChunkloader implements ModInitializer {
 	 * Populate ChunkLoaderRegistry with restored turtles from ChunkManager and selectively wake them
 	 */
 	private void populateRegistryWithRestoredTurtles(ServerWorld world, ChunkManager chunkManager) {
-		Map<UUID, ChunkLoaderPeripheral.SavedState> restoredStates = chunkManager.getAllRestoredTurtleStates();
+		Map<UUID, ChunkLoaderState> restoredStates = chunkManager.getAllRestoredTurtleStates();
 
 		int wokenCount = 0;
-		for (Map.Entry<UUID, ChunkLoaderPeripheral.SavedState> entry : restoredStates.entrySet()) {
+		for (Map.Entry<UUID, ChunkLoaderState> entry : restoredStates.entrySet()) {
 			UUID turtleId = entry.getKey();
-			ChunkLoaderPeripheral.SavedState savedState = entry.getValue();
+			ChunkLoaderState savedState = entry.getValue();
 
 			// Check if turtle is already active (shouldn't happen)
 			if (ChunkLoaderRegistry.getPeripheral(turtleId) != null) {

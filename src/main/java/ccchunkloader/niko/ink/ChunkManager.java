@@ -32,7 +32,7 @@ public class ChunkManager {
     // Unified remote management state for offline turtles (position, fuel, wake preference, computer ID)
     private final Map<UUID, RemoteManagementState> remoteManagementStates = new ConcurrentHashMap<>();
     // Bootstrap states from NBT (temporary during world load)
-    private final Map<UUID, ChunkLoaderPeripheral.SavedState> restoredTurtleStates = new ConcurrentHashMap<>();
+    private final Map<UUID, ChunkLoaderState> restoredTurtleStates = new ConcurrentHashMap<>();
     // Unified computer ID to UUID tracking (replaces separate bidirectional maps)
     private final ComputerUUIDTracker computerTracker = new ComputerUUIDTracker();
 
@@ -400,7 +400,7 @@ public class ChunkManager {
      * Update turtle state in cache for persistence
      * Called whenever a turtle's state changes to ensure dormant turtles can be saved
      */
-    public synchronized void updateTurtleStateCache(UUID turtleId, ChunkLoaderPeripheral.SavedState state) {
+    public synchronized void updateTurtleStateCache(UUID turtleId, ChunkLoaderState state) {
         if (state != null) {
             // Update unified remote management state from turtle's own state
             RemoteManagementState current = remoteManagementStates.get(turtleId);
@@ -420,7 +420,7 @@ public class ChunkManager {
     /**
      * Get cached turtle state (may be dormant turtle)
      */
-    public synchronized ChunkLoaderPeripheral.SavedState getCachedTurtleState(UUID turtleId) {
+    public synchronized ChunkLoaderState getCachedTurtleState(UUID turtleId) {
         RemoteManagementState state = remoteManagementStates.get(turtleId);
         return state != null ? state.toSavedState() : null;
     }
@@ -483,14 +483,14 @@ public class ChunkManager {
     /**
      * Get the complete restored state for a turtle UUID
      */
-    public synchronized ChunkLoaderPeripheral.SavedState getRestoredTurtleState(UUID turtleId) {
+    public synchronized ChunkLoaderState getRestoredTurtleState(UUID turtleId) {
         return restoredTurtleStates.get(turtleId);
     }
 
     /**
      * Get all complete restored turtle states
      */
-    public synchronized Map<UUID, ChunkLoaderPeripheral.SavedState> getAllRestoredTurtleStates() {
+    public synchronized Map<UUID, ChunkLoaderState> getAllRestoredTurtleStates() {
         return Map.copyOf(restoredTurtleStates);
     }
 
@@ -498,7 +498,7 @@ public class ChunkManager {
      * Get the restored position for a turtle UUID
      */
     public synchronized ChunkPos getRestoredTurtlePosition(UUID turtleId) {
-        ChunkLoaderPeripheral.SavedState state = restoredTurtleStates.get(turtleId);
+        ChunkLoaderState state = restoredTurtleStates.get(turtleId);
         return state != null ? state.lastChunkPos : null;
     }
 
@@ -507,7 +507,7 @@ public class ChunkManager {
      */
     public synchronized Map<UUID, ChunkPos> getAllRestoredTurtlePositions() {
         Map<UUID, ChunkPos> positions = new HashMap<>();
-        for (Map.Entry<UUID, ChunkLoaderPeripheral.SavedState> entry : restoredTurtleStates.entrySet()) {
+        for (Map.Entry<UUID, ChunkLoaderState> entry : restoredTurtleStates.entrySet()) {
             if (entry.getValue().lastChunkPos != null) {
                 positions.put(entry.getKey(), entry.getValue().lastChunkPos);
             }
@@ -519,7 +519,7 @@ public class ChunkManager {
      * Get wake preference for a restored turtle
      */
     public synchronized boolean getRestoredWakePreference(UUID turtleId) {
-        ChunkLoaderPeripheral.SavedState state = restoredTurtleStates.get(turtleId);
+        ChunkLoaderState state = restoredTurtleStates.get(turtleId);
         return state != null ? state.wakeOnWorldLoad : false;
     }
 
@@ -528,7 +528,7 @@ public class ChunkManager {
      */
     public synchronized Map<UUID, Boolean> getAllRestoredWakePreferences() {
         Map<UUID, Boolean> wakePrefs = new HashMap<>();
-        for (Map.Entry<UUID, ChunkLoaderPeripheral.SavedState> entry : restoredTurtleStates.entrySet()) {
+        for (Map.Entry<UUID, ChunkLoaderState> entry : restoredTurtleStates.entrySet()) {
             wakePrefs.put(entry.getKey(), entry.getValue().wakeOnWorldLoad);
         }
         return wakePrefs;
@@ -670,7 +670,7 @@ public class ChunkManager {
             // Get wake preference from active peripheral or cache
             ChunkLoaderPeripheral chunkLoader = ChunkLoaderRegistry.getPeripheral(turtleId);
             if (chunkLoader != null) {
-                ChunkLoaderPeripheral.SavedState state = chunkLoader.getSavedState();
+                ChunkLoaderState state = chunkLoader.getSavedState();
                 if (state != null) {
                     wakeOnWorldLoad = state.wakeOnWorldLoad;
                     isActive = true;
@@ -868,7 +868,7 @@ public class ChunkManager {
         /**
          * Create from SavedState (turtle's own NBT data)
          */
-        public static RemoteManagementState fromSavedState(ChunkLoaderPeripheral.SavedState savedState, Integer computerId) {
+        public static RemoteManagementState fromSavedState(ChunkLoaderState savedState, Integer computerId) {
             return new RemoteManagementState(
                 savedState.lastChunkPos,
                 savedState.fuelLevel,
@@ -881,8 +881,8 @@ public class ChunkManager {
         /**
          * Convert to SavedState format for bootstrap
          */
-        public ChunkLoaderPeripheral.SavedState toSavedState() {
-            return new ChunkLoaderPeripheral.SavedState(
+        public ChunkLoaderState toSavedState() {
+            return new ChunkLoaderState(
                 0.0, // radius - loaded from turtle's own NBT
                 lastKnownPosition,
                 0.0, // fuelDebt - loaded from turtle's own NBT  
@@ -965,7 +965,7 @@ public class ChunkManager {
                     }
 
                     // Create bootstrap state with essential data including wake preference
-                    ChunkLoaderPeripheral.SavedState bootstrapState = new ChunkLoaderPeripheral.SavedState(
+                    ChunkLoaderState bootstrapState = new ChunkLoaderState(
                         0.0, // radius - will be loaded from turtle's own NBT
                         lastChunkPos, 
                         0.0, // fuelDebt - will be loaded from turtle's own NBT
@@ -1036,7 +1036,7 @@ public class ChunkManager {
                    turtleId, inTurtleChunks, inRemoteState, inRestoredStates);
         
         // Check if we have cached state for this turtle
-        ChunkLoaderPeripheral.SavedState cachedState = getCachedTurtleState(turtleId);
+        ChunkLoaderState cachedState = getCachedTurtleState(turtleId);
         if (cachedState == null) {
             LOGGER.info("No cached state available for turtle {}", turtleId);
         }
@@ -1116,7 +1116,7 @@ public class ChunkManager {
             RemoteManagementState state = entry.getValue();
             
             // Convert to SavedState for compatibility
-            ChunkLoaderPeripheral.SavedState savedState = state.toSavedState();
+            ChunkLoaderState savedState = state.toSavedState();
 
             // Wake the turtle only if it has opted-in
             if (savedState.wakeOnWorldLoad) {
