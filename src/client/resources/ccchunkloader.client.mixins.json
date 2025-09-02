@@ -2,9 +2,7 @@
 	"required": true,
 	"package": "ccchunkloader.niko.ink.mixin.client",
 	"compatibilityLevel": "JAVA_17",
-	"client": [
-		"ExampleClientMixin"
-	],
+	"client": [],
 	"injectors": {
 		"defaultRequire": 1
 	}
