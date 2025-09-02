@@ -108,6 +108,12 @@ public class ChunkLoaderPeripheral implements IPeripheral {
         return this == other;
     }
 
+    /**
+     * Set the chunk loading radius for this turtle.
+     * @param newRadius The radius in chunks (0.0 to disable, max Config.MAX_RADIUS)
+     * @return The new radius value
+     * @throws LuaException if radius is out of valid range
+     */
     @LuaFunction
     public final double setRadius(double newRadius) throws LuaException {
         if (newRadius < 0.0 || newRadius > Config.MAX_RADIUS) {
@@ -159,11 +165,19 @@ public class ChunkLoaderPeripheral implements IPeripheral {
         }
     }
 
+    /**
+     * Get the current chunk loading radius.
+     * @return The current radius in chunks
+     */
     @LuaFunction
     public final double getRadius() {
         return this.radius;
     }
 
+    /**
+     * Get the fuel consumption rate per tick for the current configuration.
+     * @return The fuel cost per tick
+     */
     @LuaFunction
     public final double getFuelRate() {
         return calculateFuelCost();
@@ -183,6 +197,10 @@ public class ChunkLoaderPeripheral implements IPeripheral {
         return radius > 0.0;
     }
 
+    /**
+     * Set whether this turtle should automatically resume chunk loading when the world loads.
+     * @param wake true to enable auto-wake, false to disable
+     */
     @LuaFunction
     public final void setWakeOnWorldLoad(boolean wake) {
         this.wakeOnWorldLoad = wake;
@@ -201,6 +219,12 @@ public class ChunkLoaderPeripheral implements IPeripheral {
         return this.wakeOnWorldLoad;
     }
 
+    /**
+     * Enable or disable random ticking for loaded chunks.
+     * Random ticking increases fuel cost but allows plants to grow, etc.
+     * @param enabled true to enable random ticking, false to disable
+     * @throws LuaException if radius is too large for random ticking
+     */
     @LuaFunction
     public final void setRandomTick(boolean enabled) throws LuaException {
         if (enabled && radius > Config.MAX_RANDOM_TICK_RADIUS) {

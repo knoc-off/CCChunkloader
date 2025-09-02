@@ -34,12 +34,17 @@ public class CCChunkloader implements ModInitializer {
 	public static final String MOD_ID = "ccchunkloader";
 	private static final Logger LOGGER = LoggerFactory.getLogger(CCChunkloader.class);
 
+	// Block properties
+	private static final float BLOCK_HARDNESS = 2.0f;
+	private static final float BLOCK_RESISTANCE = 6.0f;
 
 	public static final Item CHUNKLOADER_UPGRADE = new Item(new Item.Settings());
 
 	// Chunkloader Manager Block
 	public static final Block CHUNKLOADER_MANAGER_BLOCK = new ChunkloaderManagerBlock(
-		AbstractBlock.Settings.create().strength(2.0f, 6.0f).sounds(net.minecraft.sound.BlockSoundGroup.STONE));
+		AbstractBlock.Settings.create()
+			.strength(BLOCK_HARDNESS, BLOCK_RESISTANCE)
+			.sounds(net.minecraft.sound.BlockSoundGroup.STONE));
 	public static final Item CHUNKLOADER_MANAGER_ITEM = new BlockItem(CHUNKLOADER_MANAGER_BLOCK, new Item.Settings());
 	public static BlockEntityType<ChunkloaderManagerBlockEntity> CHUNKLOADER_MANAGER_BLOCK_ENTITY;
 
